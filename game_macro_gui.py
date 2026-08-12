@@ -26,6 +26,7 @@ game_macro_gui.py — 重複按鍵工具（圖形介面版，黑金主題）
 設定檔為同目錄的 profiles.json（會自動從舊版格式升級）。
 """
 
+import base64
 import json
 import os
 import queue
@@ -370,6 +371,72 @@ BTN_DISP = {"left": "左鍵", "right": "右鍵", "middle": "中鍵"}
 DISP_BTN = {v: k for k, v in BTN_DISP.items()}
 
 
+def play_alert():
+    """明顯的警示音；非阻塞。"""
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["afplay", "/System/Library/Sounds/Sosumi.aiff"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif sys.platform == "win32":
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        else:
+            sys.stdout.write("\a")
+    except Exception:
+        pass
+
+
+# ---------------- 螢幕區域監看（技能消失偵測） ----------------
+
+GRID_N = 24        # 比對取樣格：24×24 點，對縮放（Retina）不敏感
+_SCT = None        # mss 實例快取（只在主執行緒使用）
+
+
+def grab_region(x, y, w, h):
+    """抓螢幕區域，回傳 (BGRA bytes, 實際寬, 實際高)。macOS 需要螢幕錄製權限。"""
+    global _SCT
+    import mss
+    if _SCT is None:
+        _SCT = getattr(mss, "MSS", mss.mss)()
+    img = _SCT.grab({"left": int(x), "top": int(y), "width": int(w), "height": int(h)})
+    return bytes(img.raw), img.width, img.height
+
+
+def sample_grid(raw, w, h, n=GRID_N):
+    """把區域畫面取樣成 n×n 個 BGR 點，作為比對指紋。"""
+    out = bytearray()
+    for j in range(n):
+        y = int((j + 0.5) * h / n)
+        base = y * w
+        for i in range(n):
+            x = int((i + 0.5) * w / n)
+            off = (base + x) * 4
+            out += raw[off:off + 3]
+    return bytes(out)
+
+
+def grid_similarity(a, b):
+    """兩張取樣指紋的相似度 0.0～1.0。"""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    d = sum(abs(p - q) for p, q in zip(a, b))
+    return 1.0 - d / (len(a) * 255)
+
+
+def notify(title, message):
+    """macOS 通知中心橫幅；其他平台靜默略過。非阻塞。"""
+    if sys.platform != "darwin":
+        return
+    try:
+        esc = lambda s: str(s).replace("\\", "\\\\").replace('"', '\\"')
+        subprocess.Popen(
+            ["osascript", "-e",
+             f'display notification "{esc(message)}" with title "{esc(title)}"'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
 def window_rect(keyword):
     """找標題（或程式名）含關鍵字的視窗，回傳左上角座標 (x, y)；找不到回傳 None。"""
     kw = (keyword or "").strip().lower()
@@ -497,6 +564,12 @@ class App:
         self.coord_win = None        # 座標擷取中的視窗
         self.coord_cb = None         # 座標擷取回呼
         self._mouse = MouseController()   # 讀取游標位置用
+        self.watch_on = False        # 技能監看中
+        self.watch_ref = b""         # 監看基準指紋
+        self.watch_missing_since = None   # 技能消失起算時間
+        self.watch_snooze = False    # 按過「知道了」，等技能恢復前不再警報
+        self.alarm = None            # 警報視窗
+        self._watch_black_warned = False
 
         self.cfg = self.load_config()
         self.cur_p = 0               # 目前角色索引
@@ -564,6 +637,7 @@ class App:
         g["use_directinput"] = bool(self.var_di.get())
         g["hotkey_toggle"] = self.hk_toggle_spec
         g["hotkey_quit"] = self.hk_quit_spec
+        g["notify_events"] = bool(self.var_notify.get())
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(self.cfg, f, ensure_ascii=False, indent=2)
@@ -630,6 +704,13 @@ class App:
         make_btn(r1, "複製", self.copy_profile, width=56, font=self.f_body).pack(side="left", padx=2)
         make_btn(r1, "重新命名", self.rename_profile, width=84, font=self.f_body).pack(side="left", padx=2)
         make_btn(r1, "刪除", self.del_profile, kind="danger", width=56, font=self.f_body).pack(side="left", padx=2)
+        self.btn_watch = make_btn(r1, "開始監看", self.toggle_watch, width=84,
+                                  height=28, font=self.f_body)
+        self.btn_watch.pack(side="right", padx=(2, 0))
+        make_btn(r1, "監看設定", self.open_watch_dialog, width=84, height=28,
+                 font=self.f_body).pack(side="right", padx=2)
+        ctk.CTkLabel(r1, text="技能監看", font=self.f_small,
+                     text_color=COL_SUBTEXT).pack(side="right", padx=(8, 4))
 
         # ── 卡片 2：技能輪替（冷卻） ──
         rot = self._card(row=1, expand=True)
@@ -727,14 +808,19 @@ class App:
                      text_color=COL_TEXT).pack(side="left")
         make_btn(orow, "↻ 重新整理視窗", lambda: self._refresh_window_list(),
                  width=120, height=28, font=self.f_body).pack(side="left", padx=8)
+        ckrow = ctk.CTkFrame(opt, fg_color="transparent")
+        ckrow.pack(fill="x", padx=14, pady=4)
+        ck_style = dict(onvalue=True, offvalue=False, font=self.f_body,
+                        text_color=COL_TEXT, fg_color=COL_GOLD,
+                        hover_color=COL_GOLD_HOVER, checkmark_color=COL_ON_GOLD,
+                        border_color="#4A4A4A", checkbox_width=20,
+                        checkbox_height=20, corner_radius=5)
         self.var_di = tk.BooleanVar(value=self.cfg["global"].get("use_directinput", True))
-        ctk.CTkCheckBox(opt, text="使用 DirectInput（Windows 建議勾選）",
-                        variable=self.var_di, onvalue=True, offvalue=False,
-                        font=self.f_body, text_color=COL_TEXT,
-                        fg_color=COL_GOLD, hover_color=COL_GOLD_HOVER,
-                        checkmark_color=COL_ON_GOLD, border_color="#4A4A4A",
-                        checkbox_width=20, checkbox_height=20,
-                        corner_radius=5).pack(anchor="w", padx=14, pady=4)
+        ctk.CTkCheckBox(ckrow, text="使用 DirectInput（Windows 建議勾選）",
+                        variable=self.var_di, **ck_style).pack(side="left")
+        self.var_notify = tk.BooleanVar(value=self.cfg["global"].get("notify_events", True))
+        ctk.CTkCheckBox(ckrow, text="開始／結束時發送系統通知",
+                        variable=self.var_notify, **ck_style).pack(side="left", padx=(24, 0))
         hkrow = ctk.CTkFrame(opt, fg_color="transparent")
         hkrow.pack(fill="x", padx=14, pady=(2, 12))
         ctk.CTkLabel(hkrow, text="控制熱鍵：輪替開關", font=self.f_body,
@@ -862,6 +948,8 @@ class App:
     # ---------- 載入 / 寫回 ----------
 
     def load_profile_into_ui(self):
+        if self.watch_on:
+            self._stop_watch("切換角色，監看已停止")   # 監看設定隨角色走
         self.tree.delete(*self.tree.get_children())
         for a in self.prof().get("rotation", {}).get("actions", []):
             self.tree.insert("", "end", values=(
@@ -1042,6 +1130,96 @@ class App:
 
         self.capture_hotkey_for(label, cb, self._control_reserved(exclude=which))
 
+    # ---------- 技能監看 ----------
+
+    def open_watch_dialog(self):
+        was_on = self.watch_on
+        if was_on:
+            self._stop_watch("設定期間暫停監看")
+        d = WatchDialog(self, self.prof().get("watch"))
+        if d.result:
+            self.prof()["watch"] = d.result
+            self.log("監看設定已更新（記得按「儲存設定」）")
+            if was_on or d.start_now:
+                self.toggle_watch()
+        elif was_on:
+            self.toggle_watch()   # 取消設定 → 恢復原本的監看
+
+    def toggle_watch(self):
+        if self.watch_on:
+            self._stop_watch("已停止監看")
+            return
+        w = self.prof().get("watch") or {}
+        if not (w.get("region") and w.get("ref")):
+            self.msg_info("技能監看",
+                          "還沒設定監看區域或基準圖。\n"
+                          "先按「監看設定」框選技能圖示的位置，並在技能存在時拍基準圖。")
+            return
+        try:
+            self.watch_ref = base64.b64decode(w["ref"])
+        except Exception:
+            self.msg_error("技能監看", "基準圖資料損壞，請重拍。")
+            return
+        self.watch_on = True
+        self.watch_missing_since = None
+        self.watch_snooze = False
+        self._watch_black_warned = False
+        self.btn_watch.configure(text="停止監看")
+        self.log(f"技能監看開始（門檻 {int(w.get('threshold', 0.85)*100)}%、"
+                 f"每 {w.get('interval', 0.5)} 秒檢查）")
+        self._watch_tick()
+
+    def _stop_watch(self, msg):
+        self.watch_on = False
+        self.watch_missing_since = None
+        self.watch_snooze = False
+        if self.alarm is not None:
+            self.alarm.close()
+            self.alarm = None
+        self.btn_watch.configure(text="開始監看")
+        self.log(msg)
+
+    def _watch_tick(self):
+        if self.watch_on and not self.stopping.is_set():
+            w = self.prof().get("watch") or {}
+            self._watch_check(w)
+            self.root.after(int(float(w.get("interval", 0.5)) * 1000), self._watch_tick)
+
+    def _watch_check(self, w):
+        kw = (w.get("window") or "").strip()
+        rx, ry, rw, rh = w.get("region", [0, 0, 0, 0])
+        if kw:
+            rect = window_rect(kw)
+            if rect is None:
+                return          # 目標視窗不在：不判定消失，等它回來
+            ax, ay = rect[0] + rx, rect[1] + ry
+        else:
+            ax, ay = rx, ry
+        try:
+            raw, gw, gh = grab_region(ax, ay, rw, rh)
+        except Exception as e:
+            self._stop_watch(f"監看中止：畫面擷取失敗（{e}）")
+            return
+        if not self._watch_black_warned and raw and raw.count(0) >= len(raw) * 0.97:
+            self._watch_black_warned = True
+            self.log("⚠ 擷取畫面幾乎全黑：macOS 請到 系統設定→隱私權與安全性→螢幕錄製 允許終端機")
+        sim = grid_similarity(sample_grid(raw, gw, gh), self.watch_ref)
+        if sim >= float(w.get("threshold", 0.85)):
+            if self.watch_missing_since is not None:
+                gone = time.monotonic() - self.watch_missing_since
+                self.log(f"技能已恢復（共消失 {gone:.0f} 秒）")
+            self.watch_missing_since = None
+            self.watch_snooze = False
+            if self.alarm is not None:
+                self.alarm.close()
+                self.alarm = None
+        else:
+            if self.watch_missing_since is None:
+                self.watch_missing_since = time.monotonic()
+                self.log(f"⚠ 技能消失！（相似度 {sim:.0%}）")
+            if self.alarm is None and not self.watch_snooze:
+                self.alarm = AlarmWindow(self)
+
     def _pick_focus(self, choice=None):
         if choice == "（不限制）":
             self.var_focus.set("")
@@ -1077,6 +1255,11 @@ class App:
             self.backend = make_backend(self.var_di.get(), self.log)
             self.log(f"輸入方式：{self.backend.name}")
 
+    def notify_evt(self, msg):
+        """開始／結束事件的系統通知（可在全域設定關閉）。"""
+        if getattr(self, "var_notify", None) is not None and self.var_notify.get():
+            notify("按鍵助手", msg)
+
     def toggle(self):
         if self.running.is_set():
             self.stop_run()
@@ -1088,6 +1271,7 @@ class App:
         self.resume_state = None
         self.msg_q.put(("status", reason))
         self.msg_q.put(("btn", self._btn_text_start()))
+        self.notify_evt(reason)
 
     def start_run(self):
         """F8／開始按鈕：啟動技能輪替。"""
@@ -1112,6 +1296,7 @@ class App:
         self.msg_q.put(("status", f"輪替執行中：{pname}"))
         self.msg_q.put(("btn", self._btn_text_pause()))
         self.log(f"開始輪替：{pname}（{len(acts)} 個動作）")
+        self.notify_evt(f"輪替開始：{pname}")
 
     def trigger_combo(self, ci):
         """組合熱鍵：插播——輪替暫停，打完自動恢復；插播中再按一次＝取消並立刻恢復。"""
@@ -1135,6 +1320,7 @@ class App:
         if not steps:
             self.log(f"「{c.get('name')}」還沒有任何步驟，未啟動（雙擊組合列表可編輯）")
             return
+        started_from_idle = not self.running.is_set()
         if (self.running.is_set() and self.resume_state is None
                 and self.runtime and self.runtime[0].get("mode") == "cooldown"):
             # 輪替執行中 → 記住現場，組合打完自動接回來
@@ -1154,6 +1340,8 @@ class App:
         self.msg_q.put(("status", f"組合插播中：{c.get('name')}"))
         self.msg_q.put(("btn", self._btn_text_pause()))
         self.log(f"{disp} 觸發「{c.get('name')}」")
+        if started_from_idle:   # 插播不通知（打遊戲時太吵），單獨執行才通知
+            self.notify_evt(f"組合開始：{c.get('name')}")
 
     def _resume_rotation(self):
         """組合插播結束（打完或被取消）：恢復先前的輪替。"""
@@ -1246,7 +1434,7 @@ class App:
 
     # ---------- 座標擷取（由點擊步驟彈窗呼叫） ----------
 
-    def capture_coord_for(self, callback):
+    def capture_coord_for(self, callback, message=None):
         """開啟座標擷取：使用者把游標移到目標位置按 F10，callback((x, y)) 收絕對座標。"""
         if self.coord_win is not None or self.capture_win is not None:
             return
@@ -1258,7 +1446,7 @@ class App:
         apply_dark_titlebar(w)
         ctk.CTkLabel(w, text="抓取座標", font=self.f_title,
                      text_color=COL_GOLD).pack(padx=28, pady=(20, 6))
-        ctk.CTkLabel(w, text="切到目標視窗，把滑鼠移到要點擊的位置\n然後按 F10",
+        ctk.CTkLabel(w, text=message or "切到目標視窗，把滑鼠移到要點擊的位置\n然後按 F10",
                      font=self.f_body, text_color=COL_TEXT,
                      justify="center").pack(padx=28, pady=4)
         ctk.CTkLabel(w, text="Esc 取消",
@@ -1386,6 +1574,7 @@ class App:
                                 else:
                                     self.msg_q.put(("status", f"組合完成 {rounds} 輪，已自動停止"))
                                     self.msg_q.put(("btn", self._btn_text_start()))
+                                    self.msg_q.put(("notify", f"組合完成 {rounds} 輪，已自動停止"))
                                 continue
                             gmin, gmax = m.get("round_gap", [1.0, 3.0])
                             rest = random.uniform(gmin, gmax)
@@ -1402,6 +1591,7 @@ class App:
                 self.msg_q.put(("status", "發生錯誤，已暫停"))
                 self.msg_q.put(("btn", self._btn_text_start()))
                 self.msg_q.put(("log", f"錯誤：{e}"))
+                self.msg_q.put(("notify", "發生錯誤，已暫停"))
 
     def fire(self, key, g):
         lo, hi = g["hold_range"]
@@ -1450,12 +1640,15 @@ class App:
                     self._resume_rotation()
                 elif kind == "winlist":
                     self._apply_window_list(*val)
+                elif kind == "notify":
+                    self.notify_evt(val)
         except queue.Empty:
             pass
         if not self.stopping.is_set():
             self.root.after(100, self.poll_queue)
 
     def on_close(self):
+        self.notify_evt("程式已結束")
         self.stopping.set()
         self.running.clear()
         try:
@@ -1900,6 +2093,240 @@ class ClickStepDialog(BaseModal):
                        "button": DISP_BTN.get(self.seg_btn.get(), "left"),
                        "wait_min": wmin, "wait_max": wmax}
         self.destroy()
+
+
+class AlarmWindow(ctk.CTkToplevel):
+    """技能消失警報：最上層紅色視窗＋重複警示音＋消失秒數即時更新。"""
+
+    def __init__(self, app):
+        super().__init__(app.root, fg_color="#2A1412")
+        self.app = app
+        self._alive = True
+        self.title("技能消失")
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
+        apply_dark_titlebar(self)
+        ctk.CTkLabel(self, text="⚠ 技能已消失", font=make_font(22, "bold"),
+                     text_color=COL_DANGER_TEXT).pack(padx=48, pady=(26, 4))
+        self.lbl_sec = ctk.CTkLabel(self, text="已消失 0 秒", font=make_font(30, "bold"),
+                                    text_color=COL_GOLD)
+        self.lbl_sec.pack(padx=48, pady=6)
+        make_btn(self, "知道了", self._ack, kind="danger_solid",
+                 width=120, height=36, font=make_font(14, "bold")).pack(pady=(10, 22))
+        self.update_idletasks()
+        # 螢幕右上角（技能列附近，最容易注意到）
+        x = self.winfo_screenwidth() - self.winfo_reqwidth() - 40
+        self.geometry(f"+{max(0, x)}+60")
+        self.protocol("WM_DELETE_WINDOW", self._ack)
+        self.lift()
+        self._tick()
+        self._beep()
+
+    def _tick(self):
+        if not self._alive:
+            return
+        since = self.app.watch_missing_since
+        if since is not None:
+            self.lbl_sec.configure(text=f"已消失 {int(time.monotonic() - since)} 秒")
+        self.after(250, self._tick)
+
+    def _beep(self):
+        if not self._alive:
+            return
+        play_alert()
+        self.after(2000, self._beep)
+
+    def _ack(self):
+        """知道了：關掉這次警報，技能恢復前不再吵。"""
+        self.app.watch_snooze = True
+        if self.app.alarm is self:
+            self.app.alarm = None
+        self.close()
+
+    def close(self):
+        self._alive = False
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
+
+class WatchDialog(BaseModal):
+    """技能監看設定：目標視窗、監看區域（F10×2 框選）、門檻/間隔、基準圖拍攝。"""
+
+    def __init__(self, app, cfg=None):
+        super().__init__(app.root, "技能監看設定")
+        self.app = app
+        self.result = None
+        self.start_now = False
+        c = cfg or {}
+        self.ref_b64 = c.get("ref", "")
+        self._corner1 = None
+        f_body, f_bold = app.f_body, app.f_bold
+
+        r1 = ctk.CTkFrame(self, fg_color="transparent")
+        r1.pack(fill="x", padx=20, pady=(18, 4))
+        ctk.CTkLabel(r1, text="目標視窗含", font=f_bold,
+                     text_color=COL_SUBTEXT).pack(side="left")
+        self.var_window = tk.StringVar(value=c.get("window", ""))
+        app._entry(r1, self.var_window, width=180).pack(side="left", padx=6)
+        ctk.CTkLabel(r1, text="（留空 = 絕對座標）", font=f_body,
+                     text_color=COL_SUBTEXT).pack(side="left")
+
+        r2 = ctk.CTkFrame(self, fg_color="transparent")
+        r2.pack(fill="x", padx=20, pady=4)
+        rx, ry, rw, rh = c.get("region", ["", "", "", ""])
+        self.var_x = tk.StringVar(value=str(rx))
+        self.var_y = tk.StringVar(value=str(ry))
+        self.var_w = tk.StringVar(value=str(rw))
+        self.var_h = tk.StringVar(value=str(rh))
+        for lbl, var in (("區域 X", self.var_x), ("Y", self.var_y),
+                         ("寬", self.var_w), ("高", self.var_h)):
+            ctk.CTkLabel(r2, text=lbl, font=f_bold,
+                         text_color=COL_SUBTEXT).pack(side="left")
+            app._entry(r2, var, width=60).pack(side="left", padx=(4, 10))
+        make_btn(r2, "框選範圍（F10×2）", self._grab_corners, kind="primary",
+                 width=140, height=28, font=f_body).pack(side="left")
+
+        r3 = ctk.CTkFrame(self, fg_color="transparent")
+        r3.pack(fill="x", padx=20, pady=4)
+        ctk.CTkLabel(r3, text="相似度低於", font=f_bold,
+                     text_color=COL_SUBTEXT).pack(side="left")
+        self.var_thr = tk.StringVar(value=str(int(float(c.get("threshold", 0.85)) * 100)))
+        app._entry(r3, self.var_thr, width=56).pack(side="left", padx=4)
+        ctk.CTkLabel(r3, text="% 視為消失　每", font=f_body,
+                     text_color=COL_TEXT).pack(side="left")
+        self.var_iv = tk.StringVar(value=str(c.get("interval", 0.5)))
+        app._entry(r3, self.var_iv, width=56).pack(side="left", padx=4)
+        ctk.CTkLabel(r3, text="秒檢查一次", font=f_body,
+                     text_color=COL_TEXT).pack(side="left")
+
+        r4 = ctk.CTkFrame(self, fg_color="transparent")
+        r4.pack(fill="x", padx=20, pady=(6, 4))
+        make_btn(r4, "拍攝基準圖（3 秒後）", self._shoot_ref, kind="primary",
+                 width=160, height=28, font=f_body).pack(side="left")
+        self.lbl_ref = ctk.CTkLabel(
+            r4, text="已有基準圖 ✓" if self.ref_b64 else "尚未拍攝基準圖",
+            font=f_body,
+            text_color=COL_GOLD if self.ref_b64 else COL_DANGER_TEXT)
+        self.lbl_ref.pack(side="left", padx=10)
+
+        self.lbl_hint = ctk.CTkLabel(
+            self, text="流程：框選技能圖示的區域 → 技能存在時按「拍攝基準圖」（3 秒內切回目標視窗）→ 儲存並開始監看。\n"
+                       "macOS 首次使用需在 系統設定→隱私權與安全性→螢幕錄製 允許終端機。",
+            font=app.f_small, text_color=COL_SUBTEXT, wraplength=470, justify="left")
+        self.lbl_hint.pack(anchor="w", padx=20, pady=(6, 0))
+
+        brow = ctk.CTkFrame(self, fg_color="transparent")
+        brow.pack(fill="x", padx=20, pady=(12, 16))
+        make_btn(brow, "儲存並開始監看", self._save_start, kind="primary",
+                 width=130).pack(side="right")
+        make_btn(brow, "儲存", self._save, width=72).pack(side="right", padx=(0, 8))
+        make_btn(brow, "取消", self.destroy, width=72).pack(side="right", padx=(0, 8))
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.run_modal(app.root)
+
+    # ----- 框選範圍：F10 兩次 -----
+
+    def _grab_corners(self):
+        self._corner1 = None
+        self.app.capture_coord_for(
+            self._on_corner1, message="框選範圍 1/2：\n滑鼠移到區域【左上角】按 F10")
+
+    def _on_corner1(self, pos):
+        self._corner1 = pos
+        self.after(150, lambda: self.app.capture_coord_for(
+            self._on_corner2, message="框選範圍 2/2：\n滑鼠移到區域【右下角】按 F10"))
+
+    def _on_corner2(self, pos):
+        c1 = self._corner1
+        if c1 is None:
+            return
+        kw = self.var_window.get().strip()
+        if not kw:
+            kw = active_window_title()
+            self.var_window.set(kw)
+        rect = window_rect(kw)
+        if rect:
+            x1, y1 = c1[0] - rect[0], c1[1] - rect[1]
+            x2, y2 = pos[0] - rect[0], pos[1] - rect[1]
+        else:
+            self.var_window.set("")
+            x1, y1 = c1
+            x2, y2 = pos
+        self.var_x.set(str(min(x1, x2)))
+        self.var_y.set(str(min(y1, y2)))
+        self.var_w.set(str(max(8, abs(x2 - x1))))
+        self.var_h.set(str(max(8, abs(y2 - y1))))
+        self.ref_b64 = ""   # 區域變了，舊基準圖作廢
+        self.lbl_ref.configure(text="區域已更新，請重拍基準圖", text_color=COL_DANGER_TEXT)
+
+    # ----- 基準圖 -----
+
+    def _region_abs(self):
+        x = int(float(self.var_x.get()))
+        y = int(float(self.var_y.get()))
+        w = int(float(self.var_w.get()))
+        h = int(float(self.var_h.get()))
+        kw = self.var_window.get().strip()
+        if kw:
+            rect = window_rect(kw)
+            if rect is None:
+                raise ValueError(f"找不到視窗「{kw}」")
+            return rect[0] + x, rect[1] + y, w, h
+        return x, y, w, h
+
+    def _shoot_ref(self, countdown=3):
+        if countdown > 0:
+            self.lbl_ref.configure(text=f"{countdown} 秒後拍攝，請確認技能圖示在畫面上…",
+                                   text_color=COL_GOLD)
+            self.after(1000, lambda: self._shoot_ref(countdown - 1))
+            return
+        try:
+            ax, ay, w, h = self._region_abs()
+            raw, gw, gh = grab_region(ax, ay, w, h)
+        except Exception as e:
+            self.lbl_ref.configure(text=f"拍攝失敗：{e}", text_color=COL_DANGER_TEXT)
+            return
+        self.ref_b64 = base64.b64encode(sample_grid(raw, gw, gh)).decode()
+        if raw.count(0) >= len(raw) * 0.97:
+            self.lbl_ref.configure(text="拍到全黑畫面：請確認螢幕錄製權限",
+                                   text_color=COL_DANGER_TEXT)
+        else:
+            self.lbl_ref.configure(text="基準圖已拍攝 ✓", text_color=COL_GOLD)
+
+    # ----- 儲存 -----
+
+    def _collect(self):
+        try:
+            region = [int(float(self.var_x.get())), int(float(self.var_y.get())),
+                      int(float(self.var_w.get())), int(float(self.var_h.get()))]
+            thr = max(0.3, min(0.99, float(self.var_thr.get() or 85) / 100.0))
+            iv = max(0.2, float(self.var_iv.get() or 0.5))
+        except ValueError:
+            MsgBox(self, "設定有誤", "區域、門檻與間隔要是數字（區域可用「框選範圍」自動填）。",
+                   kind="error")
+            self.grab_set()
+            return None
+        if not self.ref_b64:
+            MsgBox(self, "還差一步", "尚未拍攝基準圖：技能存在時按「拍攝基準圖」。")
+            self.grab_set()
+            return None
+        return {"window": self.var_window.get().strip(), "region": region,
+                "threshold": thr, "interval": iv, "ref": self.ref_b64}
+
+    def _save(self):
+        out = self._collect()
+        if out:
+            self.result = out
+            self.destroy()
+
+    def _save_start(self):
+        out = self._collect()
+        if out:
+            self.result = out
+            self.start_now = True
+            self.destroy()
 
 
 if __name__ == "__main__":
