@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-game_macro_gui.py — 遊戲重複按鍵工具（圖形介面版，黑金主題）
+game_macro_gui.py — 重複按鍵工具（圖形介面版，黑金主題）
 
 架構：角色 → 一份「技能輪替」＋ 多個「組合」
     技能輪替（冷卻）：主畫面直接編輯，F8 開始／暫停後常駐執行，
@@ -11,7 +11,7 @@ game_macro_gui.py — 遊戲重複按鍵工具（圖形介面版，黑金主題�
 
 安裝:
     uv sync                        # 依賴：customtkinter、pynput
-    # Windows 遊戲建議加裝 pydirectinput（uv 會依平台自動安裝）
+    # Windows 建議加裝 pydirectinput（uv 會依平台自動安裝）
 
 執行:
     uv run game_macro_gui.py
@@ -290,7 +290,7 @@ def make_backend(use_di, log):
         try:
             return DirectInputBackend()
         except ImportError:
-            log("未安裝 pydirectinput，改用 pynput（遊戲若沒反應請安裝它）")
+            log("未安裝 pydirectinput，改用 pynput（目標程式若沒反應請安裝它）")
     return PynputBackend()
 
 
@@ -728,7 +728,7 @@ class App:
         make_btn(orow, "↻ 重新整理視窗", lambda: self._refresh_window_list(),
                  width=120, height=28, font=self.f_body).pack(side="left", padx=8)
         self.var_di = tk.BooleanVar(value=self.cfg["global"].get("use_directinput", True))
-        ctk.CTkCheckBox(opt, text="使用 DirectInput（Windows 遊戲建議勾選）",
+        ctk.CTkCheckBox(opt, text="使用 DirectInput（Windows 建議勾選）",
                         variable=self.var_di, onvalue=True, offvalue=False,
                         font=self.f_body, text_color=COL_TEXT,
                         fg_color=COL_GOLD, hover_color=COL_GOLD_HOVER,
@@ -1254,7 +1254,7 @@ class App:
         w = ctk.CTkToplevel(self.root, fg_color=COL_CARD)
         w.title("抓取座標")
         w.resizable(False, False)
-        w.attributes("-topmost", True)   # 蓋在遊戲視窗上面也看得到說明
+        w.attributes("-topmost", True)   # 蓋在目標視窗上面也看得到說明
         apply_dark_titlebar(w)
         ctk.CTkLabel(w, text="抓取座標", font=self.f_title,
                      text_color=COL_GOLD).pack(padx=28, pady=(20, 6))

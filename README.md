@@ -1,6 +1,6 @@
-# macrogui — 遊戲按鍵助手
+# macrogui — 按鍵助手
 
-黑金主題的遊戲重複按鍵工具（CustomTkinter GUI）。
+黑金主題的重複按鍵工具（CustomTkinter GUI）。
 
 ## 架構
 
@@ -18,7 +18,7 @@ uv run game_macro_gui.py
 ```
 
 - macOS：第一次執行需在「系統設定 → 隱私權與安全性 → 輔助使用」授權終端機（pynput 監聽熱鍵用）
-- Windows：`uv sync` 會自動加裝 pydirectinput（遊戲建議在全域設定勾選 DirectInput）
+- Windows：`uv sync` 會自動加裝 pydirectinput（建議在全域設定勾選 DirectInput）
 
 ## 全域熱鍵
 
