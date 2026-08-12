@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# IDE
+.idea/
+
+# 個人巨集設定（每個人的按鍵綁定不同，且每次儲存都會變動）
+profiles.json
+
+# 設計決策記錄僅留本機
+doc/DECISIONS.md
