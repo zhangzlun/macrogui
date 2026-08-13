@@ -2583,6 +2583,10 @@ class OverlayWindow(tk.Toplevel):
                     fr = win.frame()
                     if int(fr.size.width) == sw and int(fr.size.height) >= sh - 1:
                         win.setIgnoresMouseEvents_(True)
+                        win.setHidesOnDeactivate_(False)   # 切到別的 app 也不隱藏
+                        win.setLevel_(25)                  # NSStatusWindowLevel，高於一般視窗
+                        # 跨 Space＋固定不動＋全螢幕輔助（全螢幕遊戲上也顯示）
+                        win.setCollectionBehavior_(1 | 16 | 256)
                         self.click_through_ok = True
             elif sys.platform == "win32":
                 import ctypes
