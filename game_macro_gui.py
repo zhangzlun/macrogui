@@ -37,7 +37,7 @@ import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import ttk
+from tkinter import filedialog, ttk
 
 import customtkinter as ctk
 from pynput import keyboard
@@ -412,6 +412,20 @@ def sample_grid(raw, w, h, n=GRID_N):
             x = int((i + 0.5) * w / n)
             off = (base + x) * 4
             out += raw[off:off + 3]
+    return bytes(out)
+
+
+def photo_sample_grid(photo, n=GRID_N):
+    """tk.PhotoImage → 取樣指紋（與 sample_grid 相同的 BGR 排列），
+    供使用者自行上傳圖示檔當基準圖。"""
+    w, h = photo.width(), photo.height()
+    out = bytearray()
+    for j in range(n):
+        y = int((j + 0.5) * h / n)
+        for i in range(n):
+            x = int((i + 0.5) * w / n)
+            r, g, b = photo.get(x, y)[:3]
+            out += bytes((b, g, r))
     return bytes(out)
 
 
@@ -2407,14 +2421,17 @@ class WatchDialog(BaseModal):
         r4.pack(fill="x", padx=20, pady=(6, 4))
         make_btn(r4, "拍攝基準圖（3 秒後）", self._shoot_ref, kind="primary",
                  width=160, height=28, font=f_body).pack(side="left")
+        make_btn(r4, "上傳圖示…", self._load_ref_file, width=96, height=28,
+                 font=f_body).pack(side="left", padx=6)
         self.lbl_ref = ctk.CTkLabel(
-            r4, text="已有基準圖 ✓" if self.ref_b64 else "尚未拍攝基準圖",
+            r4, text="已有基準圖 ✓" if self.ref_b64 else "尚未設定基準圖",
             font=f_body,
             text_color=COL_GOLD if self.ref_b64 else COL_DANGER_TEXT)
         self.lbl_ref.pack(side="left", padx=10)
 
         self.lbl_hint = ctk.CTkLabel(
-            self, text="流程：框選技能圖示的區域 → 技能存在時按「拍攝基準圖」（3 秒內切回目標視窗）→ 儲存並開始監看。\n"
+            self, text="流程：框選技能圖示的區域 → 技能存在時按「拍攝基準圖」（3 秒內切回目標視窗），"
+                       "或按「上傳圖示…」直接用現成的圖示檔（PNG/GIF）→ 儲存並開始監看。\n"
                        "macOS 首次使用需在 系統設定→隱私權與安全性→螢幕錄製 允許終端機。",
             font=app.f_small, text_color=COL_SUBTEXT, wraplength=470, justify="left")
         self.lbl_hint.pack(anchor="w", padx=20, pady=(6, 0))
@@ -2496,6 +2513,32 @@ class WatchDialog(BaseModal):
                                    text_color=COL_DANGER_TEXT)
         else:
             self.lbl_ref.configure(text="基準圖已拍攝 ✓", text_color=COL_GOLD)
+
+    def _load_ref_file(self):
+        path = filedialog.askopenfilename(
+            parent=self, title="選擇技能圖示",
+            filetypes=[("圖片（PNG/GIF）", "*.png *.gif"), ("所有檔案", "*.*")])
+        try:
+            self.grab_set()   # 系統檔案框會放掉 modal grab，拿回來
+        except Exception:
+            pass
+        if not path:
+            return
+        try:
+            photo = tk.PhotoImage(master=self, file=path)
+            grid = photo_sample_grid(photo)
+        except Exception as e:
+            self.lbl_ref.configure(text=f"讀取失敗：{e}（僅支援 PNG/GIF）",
+                                   text_color=COL_DANGER_TEXT)
+            return
+        self.ref_b64 = base64.b64encode(grid).decode()
+        self.lbl_ref.configure(
+            text=f"已載入圖示 ✓（{os.path.basename(path)}，{photo.width()}×{photo.height()}）",
+            text_color=COL_GOLD)
+        self.lbl_hint.configure(
+            text="提醒：上傳的圖示和實際畫面可能有縮放/色差，若誤判請把「相似度低於」調低"
+                 "（例如 70%），或改用「拍攝基準圖」以實際畫面為準。",
+            text_color=COL_SUBTEXT)
 
     # ----- 儲存 -----
 
