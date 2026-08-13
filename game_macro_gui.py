@@ -30,6 +30,7 @@ import base64
 import json
 import os
 import queue
+import zlib
 import random
 import subprocess
 import sys
@@ -415,6 +416,74 @@ def sample_grid(raw, w, h, n=GRID_N):
     return bytes(out)
 
 
+def photo_to_bgr(photo):
+    """tk.PhotoImage → (BGR bytes, w, h)，供多圖示模板搜尋使用。"""
+    w, h = photo.width(), photo.height()
+    out = bytearray()
+    for y in range(h):
+        for x in range(w):
+            r, g, b = photo.get(x, y)[:3]
+            out += bytes((b, g, r))
+    return bytes(out), w, h
+
+
+def _np_bgr(raw_bgra, w, h):
+    """BGRA 螢幕原始資料 → numpy (h, w, 3) BGR int16 陣列。"""
+    import numpy as np
+    return (np.frombuffer(raw_bgra, dtype=np.uint8)
+            .reshape(h, w, 4)[:, :, :3].astype(np.int16))
+
+
+def _resize_nn(arr, scale):
+    """最近鄰縮放（處理 Retina／圖示尺寸差）。"""
+    import numpy as np
+    h, w = arr.shape[:2]
+    nh, nw = max(1, int(h * scale)), max(1, int(w * scale))
+    yi = (np.arange(nh) * h / nh).astype(int)
+    xi = (np.arange(nw) * w / nw).astype(int)
+    return arr[yi][:, xi]
+
+ICON_SCALES = (1.0, 2.0, 1.5, 1.25, 0.75, 0.5, 1.75, 0.875)   # 2.0 = Retina 常見
+
+
+def icon_search(region, tmpl):
+    """在 region 裡滑動搜尋 tmpl，回傳 (相似度 0~1, (x, y))。
+    三段式：自適應步幅粗掃 → 中修 → 逐像素細修，兼顧速度與精度。"""
+    import numpy as np
+    H, W = region.shape[:2]
+    th, tw = tmpl.shape[:2]
+    if th > H or tw > W or th < 4 or tw < 4:
+        return 0.0, None
+    state = [1e18, 0, 0]   # best_d, bx, by
+
+    def scan(x0, x1, y0, y1, step):
+        for y in range(max(0, y0), min(H - th, y1) + 1, step):
+            row = region[y:y + th]
+            for x in range(max(0, x0), min(W - tw, x1) + 1, step):
+                d = np.abs(row[:, x:x + tw] - tmpl).mean()
+                if d < state[0]:
+                    state[0], state[1], state[2] = d, x, y
+
+    stride = max(4, min(th, tw) // 4)
+    scan(0, W - tw, 0, H - th, stride)
+    if stride > 6:
+        scan(state[1] - stride, state[1] + stride,
+             state[2] - stride, state[2] + stride, 2)
+    scan(state[1] - 3, state[1] + 3, state[2] - 3, state[2] + 3, 1)
+    return 1.0 - state[0] / 255.0, (state[1], state[2])
+
+
+def icon_search_multiscale(region, tmpl, scales=ICON_SCALES):
+    """對多個縮放比例搜尋，回傳 (相似度, (x, y), 縮放後模板尺寸, 最佳比例)。"""
+    best = (0.0, None, None, None)
+    for s in scales:
+        t = _resize_nn(tmpl, s)
+        sim, loc = icon_search(region, t)
+        if sim > best[0]:
+            best = (sim, loc, (t.shape[1], t.shape[0]), s)
+    return best
+
+
 def photo_sample_grid(photo, n=GRID_N):
     """tk.PhotoImage → 取樣指紋（與 sample_grid 相同的 BGR 排列），
     供使用者自行上傳圖示檔當基準圖。"""
@@ -609,11 +678,14 @@ class App:
         self.coord_cb = None         # 座標擷取回呼
         self._mouse = MouseController()   # 讀取游標位置用
         self.watch_on = False        # 技能監看中
-        self.watch_ref = b""         # 監看基準指紋
-        self.watch_missing_since = None   # 技能消失起算時間
-        self.watch_snooze = False    # 按過「知道了」，等技能恢復前不再警報
+        self.watch_ref = b""         # 監看基準指紋（單一區域比對模式）
+        self.watch_missing = {}      # {名稱: 消失起算時間}（兩種模式共用）
+        self.watch_snooze = False    # 按過「知道了」，全部恢復前不再警報
         self.alarm = None            # 警報視窗
         self._watch_black_warned = False
+        self.watch_thread = None     # 圖示搜尋模式的背景執行緒
+        self._watch_icon_locs = {}   # {名稱: 找到的邏輯座標框}（覆蓋層顯示）
+        self._watch_found = (0, 0)   # (找到數, 總數)（覆蓋層顯示）
         self.chat_on = False         # 聊天文字觸發中
         self.chat_thread = None
         self._chat_present = {}      # 各關鍵字目前是否在畫面上（出現的瞬間才觸發）
@@ -1215,34 +1287,69 @@ class App:
             self._stop_watch("已停止監看")
             return
         w = self.prof().get("watch") or {}
-        if not (w.get("region") and w.get("ref")):
-            self.msg_info("技能監看",
-                          "還沒設定監看區域或基準圖。\n"
-                          "先按「監看設定」框選技能圖示的位置，並在技能存在時拍基準圖。")
+        mode = w.get("mode") or ("icons" if w.get("icons") else "snapshot")
+        if not w.get("region"):
+            self.msg_info("技能監看", "還沒設定監看區域，先按「監看設定」。")
             return
-        try:
-            self.watch_ref = base64.b64decode(w["ref"])
-        except Exception:
-            self.msg_error("技能監看", "基準圖資料損壞，請重拍。")
-            return
+        if mode == "icons":
+            if not w.get("icons"):
+                self.msg_info("技能監看", "圖示搜尋模式還沒上傳任何圖示。")
+                return
+        else:
+            if not w.get("ref"):
+                self.msg_info("技能監看",
+                              "還沒設定基準圖。\n技能存在時拍攝，或上傳圖示檔。")
+                return
+            try:
+                self.watch_ref = base64.b64decode(w["ref"])
+            except Exception:
+                self.msg_error("技能監看", "基準圖資料損壞，請重拍。")
+                return
         self.watch_on = True
-        self.watch_missing_since = None
+        self.watch_missing = {}
         self.watch_snooze = False
         self._watch_black_warned = False
+        self._watch_icon_locs = {}
         self.btn_watch.configure(text="停止監看")
-        self.log(f"技能監看開始（門檻 {int(w.get('threshold', 0.85)*100)}%、"
-                 f"每 {w.get('interval', 0.5)} 秒檢查）")
-        self._watch_tick()
+        if mode == "icons":
+            self.log(f"技能監看開始：搜尋 {len(w['icons'])} 個圖示"
+                     f"（門檻 {int(float(w.get('threshold', 0.8))*100)}%、"
+                     f"每 {w.get('interval', 0.5)} 秒）")
+            self.watch_thread = threading.Thread(target=self._watch_worker_icons,
+                                                 daemon=True)
+            self.watch_thread.start()
+        else:
+            self.log(f"技能監看開始（門檻 {int(float(w.get('threshold', 0.85))*100)}%、"
+                     f"每 {w.get('interval', 0.5)} 秒檢查）")
+            self._watch_tick()
 
     def _stop_watch(self, msg):
         self.watch_on = False
-        self.watch_missing_since = None
+        self.watch_missing = {}
         self.watch_snooze = False
+        self._watch_icon_locs = {}
+        self._watch_found = (0, 0)
         if self.alarm is not None:
             self.alarm.close()
             self.alarm = None
         self.btn_watch.configure(text="開始監看")
         self.log(msg)
+
+    def _watch_grab(self, w):
+        """依設定擷取監看區域，回傳 (raw, gw, gh, 絕對區域) 或 None。"""
+        kw = (w.get("window") or "").strip()
+        rx, ry, rw, rh = w.get("region", [0, 0, 0, 0])
+        if kw:
+            rect = window_rect(kw)
+            if rect is None:
+                return None          # 目標視窗不在：不判定消失，等它回來
+            ax, ay = rect[0] + rx, rect[1] + ry
+        else:
+            ax, ay = rx, ry
+        raw, gw, gh = grab_region(ax, ay, rw, rh)
+        return raw, gw, gh, (ax, ay, rw, rh)
+
+    # ----- 單一區域比對模式（主執行緒輪詢） -----
 
     def _watch_tick(self):
         if self.watch_on and not self.stopping.is_set():
@@ -1251,40 +1358,120 @@ class App:
             self.root.after(int(float(w.get("interval", 0.5)) * 1000), self._watch_tick)
 
     def _watch_check(self, w):
-        kw = (w.get("window") or "").strip()
-        rx, ry, rw, rh = w.get("region", [0, 0, 0, 0])
-        if kw:
-            rect = window_rect(kw)
-            if rect is None:
-                return          # 目標視窗不在：不判定消失，等它回來
-            ax, ay = rect[0] + rx, rect[1] + ry
-        else:
-            ax, ay = rx, ry
         try:
-            raw, gw, gh = grab_region(ax, ay, rw, rh)
+            grabbed = self._watch_grab(w)
         except Exception as e:
             self._stop_watch(f"監看中止：畫面擷取失敗（{e}）")
             return
+        if grabbed is None:
+            return
+        raw, gw, gh, _ = grabbed
         if not self._watch_black_warned and raw and raw.count(0) >= len(raw) * 0.97:
             self._watch_black_warned = True
             self.log("⚠ 擷取畫面幾乎全黑：macOS 請到 系統設定→隱私權與安全性→螢幕錄製 允許終端機")
         sim = grid_similarity(sample_grid(raw, gw, gh), self.watch_ref)
         self._watch_last_sim = sim
-        if sim >= float(w.get("threshold", 0.85)):
-            if self.watch_missing_since is not None:
-                gone = time.monotonic() - self.watch_missing_since
-                self.log(f"技能已恢復（共消失 {gone:.0f} 秒）")
-            self.watch_missing_since = None
+        found = sim >= float(w.get("threshold", 0.85))
+        self._apply_watch_results({"技能": found},
+                                  note=f"（相似度 {sim:.0%}）" if not found else "")
+
+    # ----- 多圖示搜尋模式（背景執行緒） -----
+
+    def _watch_worker_icons(self):
+        import mss
+        try:
+            import numpy as np  # noqa: F401
+            sct = getattr(mss, "MSS", mss.mss)()
+        except Exception as e:
+            self.msg_q.put(("log", f"圖示搜尋初始化失敗：{e}"))
+            self.msg_q.put(("watch_stop", None))
+            return
+        w0 = self.prof().get("watch") or {}
+        templates = []
+        for ic in w0.get("icons", []):
+            try:
+                raw = zlib.decompress(base64.b64decode(ic["bgr"]))
+                arr = (__import__("numpy").frombuffer(raw, dtype="uint8")
+                       .reshape(ic["h"], ic["w"], 3).astype("int16"))
+                templates.append({"name": ic.get("name", "圖示"), "arr": arr,
+                                  "scale": None})
+            except Exception:
+                self.msg_q.put(("log", f"圖示「{ic.get('name')}」資料損壞，已略過"))
+        if not templates:
+            self.msg_q.put(("watch_stop", None))
+            return
+        warned_black = False
+        while self.watch_on and not self.stopping.is_set():
+            w = self.prof().get("watch") or {}
+            iv = max(0.3, float(w.get("interval", 0.5)))
+            thr = float(w.get("threshold", 0.8))
+            try:
+                kw = (w.get("window") or "").strip()
+                rx, ry, rw, rh = w.get("region", [0, 0, 0, 0])
+                if kw:
+                    rect = window_rect(kw)
+                    if rect is None:
+                        time.sleep(iv)
+                        continue
+                    ax, ay = rect[0] + rx, rect[1] + ry
+                else:
+                    ax, ay = rx, ry
+                img = sct.grab({"left": int(ax), "top": int(ay),
+                                "width": int(rw), "height": int(rh)})
+                raw = bytes(img.raw)
+                region = _np_bgr(raw, img.width, img.height)
+            except Exception as e:
+                self.msg_q.put(("log", f"圖示搜尋擷取失敗：{e}"))
+                time.sleep(iv)
+                continue
+            if not warned_black and raw.count(0) >= len(raw) * 0.97:
+                warned_black = True
+                self.msg_q.put(("log", "⚠ 擷取畫面幾乎全黑：請確認螢幕錄製權限"))
+            ratio = img.width / max(1, rw)     # 實體像素/邏輯點（Retina=2）
+            results, locs = {}, {}
+            for t in templates:
+                if t["scale"] is not None:
+                    tm = _resize_nn(t["arr"], t["scale"])
+                    sim, loc = icon_search(region, tm)
+                    size = (tm.shape[1], tm.shape[0])
+                    if sim < thr:   # 鎖定比例找不到 → 全比例重找一次
+                        sim, loc, size, sc = icon_search_multiscale(region, t["arr"])
+                        if sim >= thr:
+                            t["scale"] = sc
+                else:
+                    sim, loc, size, sc = icon_search_multiscale(region, t["arr"])
+                    if sim >= thr:
+                        t["scale"] = sc
+                found = sim >= thr
+                results[t["name"]] = found
+                if found and loc is not None:
+                    locs[t["name"]] = (ax + loc[0] / ratio, ay + loc[1] / ratio,
+                                       size[0] / ratio, size[1] / ratio)
+            self.msg_q.put(("watch_icons", (results, locs)))
+            time.sleep(iv)
+
+    def _apply_watch_results(self, results, locs=None, note=""):
+        """主執行緒：更新各目標的消失狀態、管理警報視窗。results = {名稱: 是否找到}"""
+        now = time.monotonic()
+        self._watch_icon_locs = locs or {}
+        self._watch_found = (sum(1 for v in results.values() if v), len(results))
+        for name, found in results.items():
+            if found:
+                if name in self.watch_missing:
+                    gone = now - self.watch_missing.pop(name)
+                    self.log(f"「{name}」已恢復（共消失 {gone:.0f} 秒）")
+            else:
+                if name not in self.watch_missing:
+                    self.watch_missing[name] = now
+                    self.log(f"⚠ 「{name}」消失！{note}")
+        if self.watch_missing:
+            if self.alarm is None and not self.watch_snooze:
+                self.alarm = AlarmWindow(self)
+        else:
             self.watch_snooze = False
             if self.alarm is not None:
                 self.alarm.close()
                 self.alarm = None
-        else:
-            if self.watch_missing_since is None:
-                self.watch_missing_since = time.monotonic()
-                self.log(f"⚠ 技能消失！（相似度 {sim:.0%}）")
-            if self.alarm is None and not self.watch_snooze:
-                self.alarm = AlarmWindow(self)
 
     # ---------- 聊天文字觸發 ----------
 
@@ -1858,6 +2045,11 @@ class App:
                     self._chat_match(val)
                 elif kind == "chat_stop":
                     self._stop_chat("聊天觸發已停止")
+                elif kind == "watch_icons":
+                    if self.watch_on:
+                        self._apply_watch_results(val[0], val[1])
+                elif kind == "watch_stop":
+                    self._stop_watch("技能監看已停止")
         except queue.Empty:
             pass
         if not self.stopping.is_set():
@@ -2324,8 +2516,8 @@ class AlarmWindow(ctk.CTkToplevel):
         apply_dark_titlebar(self)
         ctk.CTkLabel(self, text="⚠ 技能已消失", font=make_font(22, "bold"),
                      text_color=COL_DANGER_TEXT).pack(padx=48, pady=(26, 4))
-        self.lbl_sec = ctk.CTkLabel(self, text="已消失 0 秒", font=make_font(30, "bold"),
-                                    text_color=COL_GOLD)
+        self.lbl_sec = ctk.CTkLabel(self, text="偵測中…", font=make_font(24, "bold"),
+                                    text_color=COL_GOLD, justify="left")
         self.lbl_sec.pack(padx=48, pady=6)
         make_btn(self, "知道了", self._ack, kind="danger_solid",
                  width=120, height=36, font=make_font(14, "bold")).pack(pady=(10, 22))
@@ -2341,9 +2533,12 @@ class AlarmWindow(ctk.CTkToplevel):
     def _tick(self):
         if not self._alive:
             return
-        since = self.app.watch_missing_since
-        if since is not None:
-            self.lbl_sec.configure(text=f"已消失 {int(time.monotonic() - since)} 秒")
+        missing = self.app.watch_missing
+        if missing:
+            now = time.monotonic()
+            lines = [f"「{n}」已消失 {int(now - t)} 秒"
+                     for n, t in sorted(missing.items(), key=lambda kv: kv[1])]
+            self.lbl_sec.configure(text="\n".join(lines))
         self.after(250, self._tick)
 
     def _beep(self):
@@ -2377,8 +2572,10 @@ class WatchDialog(BaseModal):
         self.start_now = False
         c = cfg or {}
         self.ref_b64 = c.get("ref", "")
+        self.icons = json.loads(json.dumps(c.get("icons", [])))
         self._corner1 = None
         f_body, f_bold = app.f_body, app.f_bold
+        self.f_body = f_body
 
         r1 = ctk.CTkFrame(self, fg_color="transparent")
         r1.pack(fill="x", padx=20, pady=(18, 4))
@@ -2417,24 +2614,59 @@ class WatchDialog(BaseModal):
         ctk.CTkLabel(r3, text="秒檢查一次", font=f_body,
                      text_color=COL_TEXT).pack(side="left")
 
-        r4 = ctk.CTkFrame(self, fg_color="transparent")
-        r4.pack(fill="x", padx=20, pady=(6, 4))
-        make_btn(r4, "拍攝基準圖（3 秒後）", self._shoot_ref, kind="primary",
+        # 基準方式切換：區域比對（拍攝單張）或 圖示搜尋（上傳多張、位置可移動）
+        mrow = ctk.CTkFrame(self, fg_color="transparent")
+        mrow.pack(fill="x", padx=20, pady=(6, 4))
+        ctk.CTkLabel(mrow, text="基準方式", font=f_bold,
+                     text_color=COL_SUBTEXT).pack(side="left")
+        self.seg_mode = ctk.CTkSegmentedButton(
+            mrow, values=["區域比對（拍攝）", "圖示搜尋（上傳多張）"],
+            command=self._on_mode, font=f_body, height=28, corner_radius=8,
+            fg_color=COL_FIELD, selected_color=COL_GOLD_DARK,
+            selected_hover_color=COL_GOLD_DARK_HOVER,
+            unselected_color="#2C2C2C", unselected_hover_color="#383838",
+            text_color="#EDEAE0")
+        self.seg_mode.pack(side="left", padx=8)
+
+        # ── 區域比對模式的控制 ──
+        self.snap_frame = ctk.CTkFrame(self, fg_color="transparent")
+        make_btn(self.snap_frame, "拍攝基準圖（3 秒後）", self._shoot_ref, kind="primary",
                  width=160, height=28, font=f_body).pack(side="left")
-        make_btn(r4, "上傳圖示…", self._load_ref_file, width=96, height=28,
+        make_btn(self.snap_frame, "上傳圖示…", self._load_ref_file, width=96, height=28,
                  font=f_body).pack(side="left", padx=6)
         self.lbl_ref = ctk.CTkLabel(
-            r4, text="已有基準圖 ✓" if self.ref_b64 else "尚未設定基準圖",
+            self.snap_frame, text="已有基準圖 ✓" if self.ref_b64 else "尚未設定基準圖",
             font=f_body,
             text_color=COL_GOLD if self.ref_b64 else COL_DANGER_TEXT)
         self.lbl_ref.pack(side="left", padx=10)
 
+        # ── 圖示搜尋模式的控制 ──
+        self.icons_frame = ctk.CTkFrame(self, fg_color="transparent")
+        ibtns = ctk.CTkFrame(self.icons_frame, fg_color="transparent")
+        ibtns.pack(side="right", fill="y", padx=(10, 0))
+        iwrap = ctk.CTkFrame(self.icons_frame, fg_color=COL_TREE_BG, corner_radius=8)
+        iwrap.pack(side="left", fill="both", expand=True)
+        self.tree_i = ttk.Treeview(iwrap, style="Gold.Treeview", show="headings",
+                                   selectmode="browse", height=4)
+        self.tree_i.pack(side="left", fill="both", expand=True, padx=8, pady=6)
+        self.tree_i.configure(columns=("name", "size"))
+        for cc, h, w in (("name", "圖示名稱", 220), ("size", "尺寸", 90)):
+            self.tree_i.heading(cc, text=h)
+            self.tree_i.column(cc, width=w, anchor="center")
+        make_btn(ibtns, "上傳圖示(可多選)", self._add_icons, kind="primary",
+                 width=120, height=28, font=f_body).pack(pady=(6, 2))
+        make_btn(ibtns, "移除", self._del_icon, kind="danger", width=120, height=28,
+                 font=f_body).pack(pady=2)
+        self._refresh_icons()
+
         self.lbl_hint = ctk.CTkLabel(
-            self, text="流程：框選技能圖示的區域 → 技能存在時按「拍攝基準圖」（3 秒內切回目標視窗），"
-                       "或按「上傳圖示…」直接用現成的圖示檔（PNG/GIF）→ 儲存並開始監看。\n"
-                       "macOS 首次使用需在 系統設定→隱私權與安全性→螢幕錄製 允許終端機。",
-            font=app.f_small, text_color=COL_SUBTEXT, wraplength=470, justify="left")
+            self, text="", font=app.f_small, text_color=COL_SUBTEXT,
+            wraplength=470, justify="left")
         self.lbl_hint.pack(anchor="w", padx=20, pady=(6, 0))
+        init_mode = c.get("mode") or ("icons" if self.icons else "snapshot")
+        self.seg_mode.set("圖示搜尋（上傳多張）" if init_mode == "icons"
+                          else "區域比對（拍攝）")
+        self._on_mode(self.seg_mode.get())
 
         brow = ctk.CTkFrame(self, fg_color="transparent")
         brow.pack(fill="x", padx=20, pady=(12, 16))
@@ -2540,6 +2772,73 @@ class WatchDialog(BaseModal):
                  "（例如 70%），或改用「拍攝基準圖」以實際畫面為準。",
             text_color=COL_SUBTEXT)
 
+    # ----- 模式切換與多圖示管理 -----
+
+    def _on_mode(self, choice=None):
+        icons_mode = "圖示搜尋" in (choice or self.seg_mode.get())
+        self.snap_frame.pack_forget()
+        self.icons_frame.pack_forget()
+        if icons_mode:
+            self.icons_frame.pack(fill="x", padx=20, pady=(2, 4), before=self.lbl_hint)
+            self.lbl_hint.configure(
+                text="圖示搜尋：框一整條技能／buff 區域（圖示位置會移動也沒關係），"
+                     "上傳切好的圖示檔（PNG/GIF、可多張），程式在區域內搜尋每張圖示，"
+                     "找不到就警報。門檻建議 75～85%。\n"
+                     "macOS 首次使用需在 系統設定→隱私權與安全性→螢幕錄製 允許終端機。",
+                text_color=COL_SUBTEXT)
+        else:
+            self.snap_frame.pack(fill="x", padx=20, pady=(2, 4), before=self.lbl_hint)
+            self.lbl_hint.configure(
+                text="區域比對：框選單一技能圖示的固定位置 → 技能存在時按「拍攝基準圖」"
+                     "（3 秒內切回目標視窗），或上傳單張圖示檔 → 儲存並開始監看。\n"
+                     "macOS 首次使用需在 系統設定→隱私權與安全性→螢幕錄製 允許終端機。",
+                text_color=COL_SUBTEXT)
+
+    def _refresh_icons(self):
+        self.tree_i.delete(*self.tree_i.get_children())
+        for ic in self.icons:
+            self.tree_i.insert("", "end", values=(ic.get("name", "圖示"),
+                                                  f"{ic.get('w')}×{ic.get('h')}"))
+
+    def _add_icons(self):
+        paths = filedialog.askopenfilenames(
+            parent=self, title="選擇技能圖示（可多選）",
+            filetypes=[("圖片（PNG/GIF）", "*.png *.gif"), ("所有檔案", "*.*")])
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+        if not paths:
+            return
+        added, failed = 0, []
+        for p in paths:
+            try:
+                photo = tk.PhotoImage(master=self, file=p)
+                raw, w, h = photo_to_bgr(photo)
+                name = os.path.splitext(os.path.basename(p))[0]
+                base_name, i = name, 2
+                while any(ic.get("name") == name for ic in self.icons):
+                    name = f"{base_name} ({i})"
+                    i += 1
+                self.icons.append({"name": name, "w": w, "h": h,
+                                   "bgr": base64.b64encode(zlib.compress(raw)).decode()})
+                added += 1
+            except Exception:
+                failed.append(os.path.basename(p))
+        self._refresh_icons()
+        msg = f"已加入 {added} 張圖示，共 {len(self.icons)} 張"
+        if failed:
+            msg += f"；讀取失敗：{'、'.join(failed)}（僅支援 PNG/GIF）"
+        self.lbl_hint.configure(text=msg,
+                                text_color=COL_DANGER_TEXT if failed else COL_GOLD)
+
+    def _del_icon(self):
+        sel = self.tree_i.selection()
+        if not sel:
+            return
+        del self.icons[self.tree_i.index(sel[0])]
+        self._refresh_icons()
+
     # ----- 儲存 -----
 
     def _collect(self):
@@ -2553,12 +2852,23 @@ class WatchDialog(BaseModal):
                    kind="error")
             self.grab_set()
             return None
-        if not self.ref_b64:
-            MsgBox(self, "還差一步", "尚未拍攝基準圖：技能存在時按「拍攝基準圖」。")
-            self.grab_set()
-            return None
-        return {"window": self.var_window.get().strip(), "region": region,
-                "threshold": thr, "interval": iv, "ref": self.ref_b64}
+        out = {"window": self.var_window.get().strip(), "region": region,
+               "threshold": thr, "interval": iv}
+        if "圖示搜尋" in self.seg_mode.get():
+            if not self.icons:
+                MsgBox(self, "還差一步", "至少上傳一張切好的圖示（PNG/GIF）。")
+                self.grab_set()
+                return None
+            out["mode"] = "icons"
+            out["icons"] = self.icons
+        else:
+            if not self.ref_b64:
+                MsgBox(self, "還差一步", "尚未設定基準圖：拍攝或上傳單張圖示。")
+                self.grab_set()
+                return None
+            out["mode"] = "snapshot"
+            out["ref"] = self.ref_b64
+        return out
 
     def _save(self):
         out = self._collect()
@@ -2666,13 +2976,24 @@ class OverlayWindow(tk.Toplevel):
         box = app._abs_region(prof.get("watch"))
         if box:
             if app.watch_on:
-                sim = app._watch_last_sim
-                st = f"監看中 {sim:.0%}" if sim is not None else "監看中"
-                if app.watch_missing_since is not None:
-                    st = f"⚠ 消失 {int(time.monotonic() - app.watch_missing_since)} 秒"
+                if app.watch_missing:
+                    oldest = min(app.watch_missing.values())
+                    names = "、".join(app.watch_missing)
+                    st = f"⚠ {names} 消失 {int(time.monotonic() - oldest)} 秒"
+                elif (prof.get("watch") or {}).get("icons"):
+                    st = f"監看中 {app._watch_found[0]}/{app._watch_found[1]} 個圖示"
+                else:
+                    sim = app._watch_last_sim
+                    st = f"監看中 {sim:.0%}" if sim is not None else "監看中"
             else:
                 st = "未啟動"
             self._draw_region(box, self.WATCH_COLOR, f"技能監看　{st}")
+            # 圖示搜尋模式：把每個找到的圖示位置也框出來
+            for name, (ix, iy, iw, ih) in list(app._watch_icon_locs.items()):
+                self.canvas.create_rectangle(ix, iy, ix + iw, iy + ih,
+                                             outline=self.WATCH_COLOR, width=1)
+                self.canvas.create_text(ix + 2, iy - 8, text=name, anchor="w",
+                                        fill=self.WATCH_COLOR, font=("", 10))
         cbox = app._abs_region(prof.get("chat"))
         if cbox:
             if app.chat_on:
