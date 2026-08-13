@@ -423,6 +423,36 @@ def grid_similarity(a, b):
     return 1.0 - d / (len(a) * 255)
 
 
+def ocr_text(raw, w, h):
+    """對 BGRA 畫面做文字辨識。macOS 用系統 Vision（支援中文）；
+    其他平台暫不支援，回傳 None。失敗回傳空字串。"""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import Quartz
+        import Vision
+        provider = Quartz.CGDataProviderCreateWithData(None, bytes(raw), len(raw), None)
+        cgimg = Quartz.CGImageCreate(
+            w, h, 8, 32, w * 4, Quartz.CGColorSpaceCreateDeviceRGB(),
+            Quartz.kCGImageAlphaNoneSkipFirst | Quartz.kCGBitmapByteOrder32Little,
+            provider, None, False, Quartz.kCGRenderingIntentDefault)
+        handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(cgimg, None)
+        req = Vision.VNRecognizeTextRequest.alloc().init()
+        req.setRecognitionLanguages_(["zh-Hant", "en-US"])
+        req.setUsesLanguageCorrection_(False)
+        ok, _err = handler.performRequests_error_([req], None)
+        if not ok:
+            return ""
+        out = []
+        for obs in (req.results() or []):
+            c = obs.topCandidates_(1)
+            if c and len(c):
+                out.append(str(c[0].string()))
+        return "\n".join(out)
+    except Exception:
+        return ""
+
+
 def notify(title, message):
     """macOS 通知中心橫幅；其他平台靜默略過。非阻塞。"""
     if sys.platform != "darwin":
@@ -570,6 +600,13 @@ class App:
         self.watch_snooze = False    # 按過「知道了」，等技能恢復前不再警報
         self.alarm = None            # 警報視窗
         self._watch_black_warned = False
+        self.chat_on = False         # 聊天文字觸發中
+        self.chat_thread = None
+        self._chat_present = {}      # 各關鍵字目前是否在畫面上（出現的瞬間才觸發）
+        self._chat_last = {}         # 各關鍵字上次觸發時間（冷卻用）
+        self.overlay = None          # 監看範圍覆蓋層（透明、點擊穿透）
+        self._watch_last_sim = None  # 最近一次技能比對相似度（覆蓋層顯示用）
+        self._chat_last_text = ""    # 最近一次聊天辨識結果（覆蓋層顯示用）
 
         self.cfg = self.load_config()
         self.cur_p = 0               # 目前角色索引
@@ -689,7 +726,7 @@ class App:
         # ── 卡片 1：角色 ──
         sel = self._card(row=0, pady=(12, 4))
         r1 = ctk.CTkFrame(sel, fg_color="transparent")
-        r1.pack(fill="x", padx=12, pady=10)
+        r1.pack(fill="x", padx=12, pady=(10, 3))
         ctk.CTkLabel(r1, text="角色", font=self.f_bold, text_color=COL_SUBTEXT,
                      width=36, anchor="w").pack(side="left")
         self.cmb_p = ctk.CTkComboBox(
@@ -704,13 +741,25 @@ class App:
         make_btn(r1, "複製", self.copy_profile, width=56, font=self.f_body).pack(side="left", padx=2)
         make_btn(r1, "重新命名", self.rename_profile, width=84, font=self.f_body).pack(side="left", padx=2)
         make_btn(r1, "刪除", self.del_profile, kind="danger", width=56, font=self.f_body).pack(side="left", padx=2)
-        self.btn_watch = make_btn(r1, "開始監看", self.toggle_watch, width=84,
+        r1b = ctk.CTkFrame(sel, fg_color="transparent")
+        r1b.pack(fill="x", padx=12, pady=(0, 10))
+        ctk.CTkLabel(r1b, text="技能監看", font=self.f_small,
+                     text_color=COL_SUBTEXT).pack(side="left")
+        make_btn(r1b, "監看設定", self.open_watch_dialog, width=84, height=28,
+                 font=self.f_body).pack(side="left", padx=(6, 2))
+        self.btn_watch = make_btn(r1b, "開始監看", self.toggle_watch, width=84,
                                   height=28, font=self.f_body)
-        self.btn_watch.pack(side="right", padx=(2, 0))
-        make_btn(r1, "監看設定", self.open_watch_dialog, width=84, height=28,
-                 font=self.f_body).pack(side="right", padx=2)
-        ctk.CTkLabel(r1, text="技能監看", font=self.f_small,
-                     text_color=COL_SUBTEXT).pack(side="right", padx=(8, 4))
+        self.btn_watch.pack(side="left", padx=2)
+        ctk.CTkLabel(r1b, text="　聊天觸發", font=self.f_small,
+                     text_color=COL_SUBTEXT).pack(side="left")
+        make_btn(r1b, "觸發設定", self.open_chat_dialog, width=84, height=28,
+                 font=self.f_body).pack(side="left", padx=(6, 2))
+        self.btn_chat = make_btn(r1b, "開始觸發", self.toggle_chat, width=84,
+                                 height=28, font=self.f_body)
+        self.btn_chat.pack(side="left", padx=2)
+        self.btn_overlay = make_btn(r1b, "顯示範圍", self.toggle_overlay, width=84,
+                                    height=28, font=self.f_body)
+        self.btn_overlay.pack(side="left", padx=(14, 2))
 
         # ── 卡片 2：技能輪替（冷卻） ──
         rot = self._card(row=1, expand=True)
@@ -949,7 +998,9 @@ class App:
 
     def load_profile_into_ui(self):
         if self.watch_on:
-            self._stop_watch("切換角色，監看已停止")   # 監看設定隨角色走
+            self._stop_watch("切換角色，監看已停止")   # 監看/觸發設定隨角色走
+        if self.chat_on:
+            self._stop_chat("切換角色，聊天觸發已停止")
         self.tree.delete(*self.tree.get_children())
         for a in self.prof().get("rotation", {}).get("actions", []):
             self.tree.insert("", "end", values=(
@@ -1204,6 +1255,7 @@ class App:
             self._watch_black_warned = True
             self.log("⚠ 擷取畫面幾乎全黑：macOS 請到 系統設定→隱私權與安全性→螢幕錄製 允許終端機")
         sim = grid_similarity(sample_grid(raw, gw, gh), self.watch_ref)
+        self._watch_last_sim = sim
         if sim >= float(w.get("threshold", 0.85)):
             if self.watch_missing_since is not None:
                 gone = time.monotonic() - self.watch_missing_since
@@ -1219,6 +1271,151 @@ class App:
                 self.log(f"⚠ 技能消失！（相似度 {sim:.0%}）")
             if self.alarm is None and not self.watch_snooze:
                 self.alarm = AlarmWindow(self)
+
+    # ---------- 聊天文字觸發 ----------
+
+    def open_chat_dialog(self):
+        was_on = self.chat_on
+        if was_on:
+            self._stop_chat("設定期間暫停聊天觸發")
+        d = ChatDialog(self, self.prof().get("chat"))
+        if d.result:
+            self.prof()["chat"] = d.result
+            self.log("聊天觸發設定已更新（記得按「儲存設定」）")
+            if was_on or d.start_now:
+                self.toggle_chat()
+        elif was_on:
+            self.toggle_chat()
+
+    def toggle_chat(self):
+        if self.chat_on:
+            self._stop_chat("已停止聊天觸發")
+            return
+        c = self.prof().get("chat") or {}
+        if not (c.get("region") and c.get("rules")):
+            self.msg_info("聊天觸發",
+                          "還沒設定辨識區域或規則。\n"
+                          "先按「觸發設定」框選聊天視窗的區域，並新增觸發規則。")
+            return
+        if sys.platform != "darwin":
+            self.msg_info("聊天觸發", "文字辨識目前僅支援 macOS（Windows 版待開發）。")
+            return
+        self.chat_on = True
+        self._chat_present = {}
+        self._chat_last = {}
+        self.btn_chat.configure(text="停止觸發")
+        self.log(f"聊天觸發開始（{len(c['rules'])} 條規則、每 {c.get('interval', 1.0)} 秒辨識）")
+        self.chat_thread = threading.Thread(target=self._chat_worker, daemon=True)
+        self.chat_thread.start()
+
+    def _stop_chat(self, msg):
+        self.chat_on = False
+        self.btn_chat.configure(text="開始觸發")
+        self.log(msg)
+
+    def _chat_worker(self):
+        """背景執行緒：定時擷取聊天區域＋OCR，辨識文字丟回主執行緒比對。"""
+        import mss
+        try:
+            sct = getattr(mss, "MSS", mss.mss)()   # mss 不跨執行緒共用，這裡開自己的
+        except Exception as e:
+            self.msg_q.put(("log", f"聊天辨識初始化失敗：{e}"))
+            self.msg_q.put(("chat_stop", None))
+            return
+        warned_black = False
+        while self.chat_on and not self.stopping.is_set():
+            c = self.prof().get("chat") or {}
+            iv = max(0.5, float(c.get("interval", 1.0)))
+            kw = (c.get("window") or "").strip()
+            rx, ry, rw, rh = c.get("region", [0, 0, 0, 0])
+            try:
+                if kw:
+                    rect = window_rect(kw)
+                    if rect is None:
+                        time.sleep(iv)
+                        continue
+                    ax, ay = rect[0] + rx, rect[1] + ry
+                else:
+                    ax, ay = rx, ry
+                img = sct.grab({"left": int(ax), "top": int(ay),
+                                "width": int(rw), "height": int(rh)})
+                raw = bytes(img.raw)
+                text = ocr_text(raw, img.width, img.height)
+            except Exception as e:
+                self.msg_q.put(("log", f"聊天辨識失敗：{e}"))
+                time.sleep(iv)
+                continue
+            if text is None:
+                self.msg_q.put(("log", "此平台不支援文字辨識"))
+                self.msg_q.put(("chat_stop", None))
+                return
+            if not warned_black and raw and raw.count(0) >= len(raw) * 0.97:
+                warned_black = True
+                self.msg_q.put(("log", "⚠ 聊天區域擷取全黑：請確認螢幕錄製權限"))
+            self.msg_q.put(("chat_text", text))
+            time.sleep(iv)
+
+    def _chat_match(self, text):
+        """主執行緒：關鍵字「出現的瞬間」觸發（持續在畫面上不重複觸發），附冷卻。"""
+        if not self.chat_on:
+            return
+        c = self.prof().get("chat") or {}
+        now = time.monotonic()
+        for rule in c.get("rules", []):
+            kws = rule.get("text", "")
+            if not kws:
+                continue
+            present = kws in text
+            was = self._chat_present.get(kws, False)
+            self._chat_present[kws] = present
+            if not present or was:
+                continue
+            if now - self._chat_last.get(kws, -1e9) < float(rule.get("cooldown", 5.0)):
+                continue
+            self._chat_last[kws] = now
+            if rule.get("combo"):
+                combos = self.prof().get("combos", [])
+                idx = next((i for i, cb in enumerate(combos)
+                            if cb.get("name") == rule["combo"]), None)
+                if idx is None:
+                    self.log(f"聊天觸發：「{kws}」對應的組合「{rule['combo']}」不存在，已略過")
+                    continue
+                self.log(f"聊天觸發：「{kws}」→ 組合「{rule['combo']}」")
+                self.trigger_combo(idx)
+            elif rule.get("key"):
+                self._ensure_backend()
+                lo, hi = self.cfg["global"].get("hold_range", [0.04, 0.09])
+                try:
+                    self.backend.tap(rule["key"], random.uniform(lo, hi))
+                    self.count += 1
+                    self.log(f"聊天觸發：「{kws}」→ 按 {rule['key']}  (#{self.count})")
+                except Exception as e:
+                    self.log(f"聊天觸發按鍵失敗：{e}")
+
+    # ---------- 監看範圍覆蓋層 ----------
+
+    def _abs_region(self, cfg):
+        """把「視窗相對區域」換算成螢幕絕對座標；視窗不在或未設定回傳 None。"""
+        if not cfg or not cfg.get("region"):
+            return None
+        rx, ry, rw, rh = cfg["region"]
+        kw = (cfg.get("window") or "").strip()
+        if kw:
+            rect = window_rect(kw)
+            if rect is None:
+                return None
+            return rect[0] + rx, rect[1] + ry, rw, rh
+        return rx, ry, rw, rh
+
+    def toggle_overlay(self):
+        if self.overlay is not None:
+            self.overlay.close()
+            self.overlay = None
+            self.btn_overlay.configure(text="顯示範圍")
+            return
+        self.overlay = OverlayWindow(self)
+        self.btn_overlay.configure(text="隱藏範圍")
+        self.log("監看範圍覆蓋層已開啟（透明、點擊穿透，不影響底下操作）")
 
     def _pick_focus(self, choice=None):
         if choice == "（不限制）":
@@ -1642,6 +1839,11 @@ class App:
                     self._apply_window_list(*val)
                 elif kind == "notify":
                     self.notify_evt(val)
+                elif kind == "chat_text":
+                    self._chat_last_text = val
+                    self._chat_match(val)
+                elif kind == "chat_stop":
+                    self._stop_chat("聊天觸發已停止")
         except queue.Empty:
             pass
         if not self.stopping.is_set():
@@ -2327,6 +2529,463 @@ class WatchDialog(BaseModal):
             self.result = out
             self.start_now = True
             self.destroy()
+
+
+class OverlayWindow(tk.Toplevel):
+    """全螢幕透明覆蓋層：框出技能監看與聊天辨識的區域並顯示即時狀態。
+    點擊穿透——完全不影響底下視窗的操作。"""
+
+    WATCH_COLOR = COL_GOLD
+    CHAT_COLOR = "#5FB0D0"
+
+    def __init__(self, app):
+        super().__init__(app.root)
+        self.app = app
+        self._alive = True
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{sw}x{sh}+0+0")
+        if sys.platform == "darwin":
+            bg = "systemTransparent"
+            try:
+                self.attributes("-transparent", True)
+                self.config(bg=bg)
+            except Exception:
+                bg = "#010101"
+                self.attributes("-alpha", 0.35)
+        elif sys.platform == "win32":
+            bg = "#010101"
+            self.config(bg=bg)
+            try:
+                self.attributes("-transparentcolor", bg)   # 該色像素透明且可點穿
+            except Exception:
+                self.attributes("-alpha", 0.35)
+        else:
+            bg = "#010101"
+            self.attributes("-alpha", 0.35)
+        self.canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg=bg)
+        self.canvas.pack(fill="both", expand=True)
+        self.update_idletasks()
+        self._make_click_through()
+        self._tick()
+
+    def _make_click_through(self):
+        """讓整個覆蓋層無視滑鼠事件（點擊直接落到底下的視窗）。"""
+        self.click_through_ok = False
+        try:
+            if sys.platform == "darwin":
+                # 從 NSApp 的視窗清單裡找覆蓋層（唯一的全螢幕無邊框視窗）
+                from AppKit import NSApplication
+                sw = self.winfo_screenwidth()
+                sh = self.winfo_screenheight()
+                for win in NSApplication.sharedApplication().windows():
+                    fr = win.frame()
+                    if int(fr.size.width) == sw and int(fr.size.height) >= sh - 1:
+                        win.setIgnoresMouseEvents_(True)
+                        self.click_through_ok = True
+            elif sys.platform == "win32":
+                import ctypes
+                GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_TRANSPARENT = -20, 0x80000, 0x20
+                hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+                style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                ctypes.windll.user32.SetWindowLongW(
+                    hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED | WS_EX_TRANSPARENT)
+                self.click_through_ok = True
+        except Exception:
+            pass
+
+    def _draw_region(self, box, color, label):
+        x, y, w, h = box
+        # 框線畫在區域「外側」3px，避免被監看擷取拍進去影響比對
+        self.canvas.create_rectangle(x - 3, y - 3, x + w + 3, y + h + 3,
+                                     outline=color, width=2)
+        tx, ty = x - 3, max(2, y - 24)
+        tid = self.canvas.create_text(tx + 6, ty + 9, text=label, anchor="w",
+                                      fill="#181818", font=("", 12, "bold"))
+        bbox = self.canvas.bbox(tid)
+        if bbox:
+            self.canvas.create_rectangle(bbox[0] - 6, bbox[1] - 3,
+                                         bbox[2] + 6, bbox[3] + 3,
+                                         fill=color, outline=color)
+            self.canvas.tag_raise(tid)
+
+    def _tick(self):
+        if not self._alive:
+            return
+        app = self.app
+        self.canvas.delete("all")
+        prof = app.prof()
+        box = app._abs_region(prof.get("watch"))
+        if box:
+            if app.watch_on:
+                sim = app._watch_last_sim
+                st = f"監看中 {sim:.0%}" if sim is not None else "監看中"
+                if app.watch_missing_since is not None:
+                    st = f"⚠ 消失 {int(time.monotonic() - app.watch_missing_since)} 秒"
+            else:
+                st = "未啟動"
+            self._draw_region(box, self.WATCH_COLOR, f"技能監看　{st}")
+        cbox = app._abs_region(prof.get("chat"))
+        if cbox:
+            if app.chat_on:
+                t = app._chat_last_text.replace("\n", " ")
+                st = "辨識中：" + (t[:24] + "…" if len(t) > 24 else (t or "（無文字）"))
+            else:
+                st = "未啟動"
+            self._draw_region(cbox, self.CHAT_COLOR, f"聊天觸發　{st}")
+        self.after(500, self._tick)
+
+    def close(self):
+        self._alive = False
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
+
+class ChatDialog(BaseModal):
+    """聊天文字觸發設定：辨識區域（F10×2 框選）、辨識間隔、規則列表、測試辨識。"""
+
+    def __init__(self, app, cfg=None):
+        super().__init__(app.root, "聊天觸發設定")
+        self.app = app
+        self.result = None
+        self.start_now = False
+        c = cfg or {}
+        self.rules = json.loads(json.dumps(c.get("rules", [])))
+        self._corner1 = None
+        f_body, f_bold = app.f_body, app.f_bold
+
+        r1 = ctk.CTkFrame(self, fg_color="transparent")
+        r1.pack(fill="x", padx=20, pady=(18, 4))
+        ctk.CTkLabel(r1, text="目標視窗含", font=f_bold,
+                     text_color=COL_SUBTEXT).pack(side="left")
+        self.var_window = tk.StringVar(value=c.get("window", ""))
+        app._entry(r1, self.var_window, width=170).pack(side="left", padx=6)
+        ctk.CTkLabel(r1, text="（留空 = 絕對座標）", font=f_body,
+                     text_color=COL_SUBTEXT).pack(side="left")
+
+        r2 = ctk.CTkFrame(self, fg_color="transparent")
+        r2.pack(fill="x", padx=20, pady=4)
+        rx, ry, rw, rh = c.get("region", ["", "", "", ""])
+        self.var_x = tk.StringVar(value=str(rx))
+        self.var_y = tk.StringVar(value=str(ry))
+        self.var_w = tk.StringVar(value=str(rw))
+        self.var_h = tk.StringVar(value=str(rh))
+        for lbl, var in (("區域 X", self.var_x), ("Y", self.var_y),
+                         ("寬", self.var_w), ("高", self.var_h)):
+            ctk.CTkLabel(r2, text=lbl, font=f_bold,
+                         text_color=COL_SUBTEXT).pack(side="left")
+            app._entry(r2, var, width=58).pack(side="left", padx=(4, 8))
+        make_btn(r2, "框選範圍（F10×2）", self._grab_corners, kind="primary",
+                 width=140, height=28, font=f_body).pack(side="left")
+
+        r3 = ctk.CTkFrame(self, fg_color="transparent")
+        r3.pack(fill="x", padx=20, pady=4)
+        ctk.CTkLabel(r3, text="每", font=f_bold, text_color=COL_SUBTEXT).pack(side="left")
+        self.var_iv = tk.StringVar(value=str(c.get("interval", 1.0)))
+        app._entry(r3, self.var_iv, width=56).pack(side="left", padx=4)
+        ctk.CTkLabel(r3, text="秒辨識一次（文字辨識較耗時，建議 ≥ 1 秒）",
+                     font=f_body, text_color=COL_TEXT).pack(side="left")
+        make_btn(r3, "測試辨識", self._test_ocr, width=88, height=28,
+                 font=f_body).pack(side="left", padx=12)
+
+        # 規則列表
+        ctk.CTkLabel(self, text="觸發規則（文字出現的瞬間觸發，持續顯示不重複）",
+                     font=f_bold, text_color=COL_GOLD).pack(anchor="w", padx=20, pady=(8, 2))
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=20, pady=(0, 6))
+        rbtns = ctk.CTkFrame(body, fg_color="transparent")
+        rbtns.pack(side="right", fill="y", padx=(10, 0))
+        wrap = ctk.CTkFrame(body, fg_color=COL_TREE_BG, corner_radius=8)
+        wrap.pack(side="left", fill="both", expand=True)
+        self.tree_r = ttk.Treeview(wrap, style="Gold.Treeview", show="headings",
+                                   selectmode="browse", height=6)
+        rsb = ctk.CTkScrollbar(wrap, command=self.tree_r.yview, fg_color="transparent",
+                               button_color="#3A3A3A", button_hover_color="#4E4E4E")
+        rsb.pack(side="right", fill="y", padx=(0, 4), pady=8)
+        self.tree_r.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        self.tree_r.configure(yscrollcommand=rsb.set,
+                              columns=("text", "action", "cd"))
+        for cc, h, w in (("text", "觸發文字", 170), ("action", "動作", 150),
+                         ("cd", "冷卻(秒)", 70)):
+            self.tree_r.heading(cc, text=h)
+            self.tree_r.column(cc, width=w, anchor="center")
+        self._refresh_rules()
+        self.tree_r.bind("<Double-1>", lambda e: self._edit_rule())
+        make_btn(rbtns, "新增規則", self._add_rule, kind="primary",
+                 width=88, height=28, font=f_body).pack(pady=(8, 2))
+        make_btn(rbtns, "編輯", self._edit_rule, width=88, height=28,
+                 font=f_body).pack(pady=2)
+        make_btn(rbtns, "刪除", self._del_rule, kind="danger", width=88, height=28,
+                 font=f_body).pack(pady=2)
+
+        self.lbl_hint = ctk.CTkLabel(
+            self, text="流程：框選聊天視窗的文字區域 → 按「測試辨識」確認讀得到 → 新增規則 → 儲存並開始。",
+            font=app.f_small, text_color=COL_SUBTEXT, wraplength=500, justify="left")
+        self.lbl_hint.pack(anchor="w", padx=20, pady=(4, 0))
+
+        brow = ctk.CTkFrame(self, fg_color="transparent")
+        brow.pack(fill="x", padx=20, pady=(10, 16))
+        make_btn(brow, "儲存並開始", self._save_start, kind="primary",
+                 width=110).pack(side="right")
+        make_btn(brow, "儲存", self._save, width=72).pack(side="right", padx=(0, 8))
+        make_btn(brow, "取消", self.destroy, width=72).pack(side="right", padx=(0, 8))
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.run_modal(app.root)
+
+    # ----- 區域框選（F10×2） -----
+
+    def _grab_corners(self):
+        self._corner1 = None
+        self.app.capture_coord_for(
+            self._on_corner1, message="框選範圍 1/2：\n滑鼠移到聊天區域【左上角】按 F10")
+
+    def _on_corner1(self, pos):
+        self._corner1 = pos
+        self.after(150, lambda: self.app.capture_coord_for(
+            self._on_corner2, message="框選範圍 2/2：\n滑鼠移到聊天區域【右下角】按 F10"))
+
+    def _on_corner2(self, pos):
+        c1 = self._corner1
+        if c1 is None:
+            return
+        kw = self.var_window.get().strip()
+        if not kw:
+            kw = active_window_title()
+            self.var_window.set(kw)
+        rect = window_rect(kw)
+        if rect:
+            x1, y1 = c1[0] - rect[0], c1[1] - rect[1]
+            x2, y2 = pos[0] - rect[0], pos[1] - rect[1]
+        else:
+            self.var_window.set("")
+            x1, y1 = c1
+            x2, y2 = pos
+        self.var_x.set(str(min(x1, x2)))
+        self.var_y.set(str(min(y1, y2)))
+        self.var_w.set(str(max(16, abs(x2 - x1))))
+        self.var_h.set(str(max(16, abs(y2 - y1))))
+        self.lbl_hint.configure(text="區域已更新，按「測試辨識」確認讀得到文字。",
+                                text_color=COL_GOLD)
+
+    # ----- 測試辨識 -----
+
+    def _region_abs(self):
+        x = int(float(self.var_x.get()))
+        y = int(float(self.var_y.get()))
+        w = int(float(self.var_w.get()))
+        h = int(float(self.var_h.get()))
+        kw = self.var_window.get().strip()
+        if kw:
+            rect = window_rect(kw)
+            if rect is None:
+                raise ValueError(f"找不到視窗「{kw}」")
+            return rect[0] + x, rect[1] + y, w, h
+        return x, y, w, h
+
+    def _test_ocr(self):
+        try:
+            ax, ay, w, h = self._region_abs()
+        except Exception as e:
+            self.lbl_hint.configure(text=f"測試失敗：{e}", text_color=COL_DANGER_TEXT)
+            return
+        self.lbl_hint.configure(text="辨識中…", text_color=COL_GOLD)
+
+        def work():
+            try:
+                raw, gw, gh = grab_region(ax, ay, w, h)
+                text = ocr_text(raw, gw, gh)
+            except Exception as e:
+                text = f"（擷取失敗：{e}）"
+            self.app.msg_q.put(("log", "測試辨識完成"))
+            self.after(0, lambda: self._show_test(text))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_test(self, text):
+        if text is None:
+            shown = "此平台不支援文字辨識"
+        elif not text:
+            shown = "（沒讀到文字：確認區域、字體大小與螢幕錄製權限）"
+        else:
+            t = text.replace("\n", " ／ ")
+            shown = ("辨識結果：" + (t[:80] + "…" if len(t) > 80 else t))
+        self.lbl_hint.configure(text=shown, text_color=COL_TEXT)
+
+    # ----- 規則 -----
+
+    def _refresh_rules(self, keep=None):
+        self.tree_r.delete(*self.tree_r.get_children())
+        for r in self.rules:
+            act = (f"組合「{r['combo']}」" if r.get("combo") else f"按 {r.get('key', '')}")
+            self.tree_r.insert("", "end", values=(r.get("text", ""), act,
+                                                  r.get("cooldown", 5.0)))
+        kids = self.tree_r.get_children()
+        if keep is not None and kids:
+            self.tree_r.selection_set(kids[min(keep, len(kids) - 1)])
+
+    def _sel_rule(self):
+        sel = self.tree_r.selection()
+        return self.tree_r.index(sel[0]) if sel else None
+
+    def _add_rule(self):
+        d = ChatRuleDialog(self, self.app, None)
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+        if d.result:
+            self.rules.append(d.result)
+            self._refresh_rules(keep=len(self.rules) - 1)
+
+    def _edit_rule(self):
+        i = self._sel_rule()
+        if i is None:
+            return
+        d = ChatRuleDialog(self, self.app, self.rules[i])
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+        if d.result:
+            self.rules[i] = d.result
+            self._refresh_rules(keep=i)
+
+    def _del_rule(self):
+        i = self._sel_rule()
+        if i is None:
+            return
+        del self.rules[i]
+        self._refresh_rules(keep=i)
+
+    # ----- 儲存 -----
+
+    def _collect(self):
+        try:
+            region = [int(float(self.var_x.get())), int(float(self.var_y.get())),
+                      int(float(self.var_w.get())), int(float(self.var_h.get()))]
+            iv = max(0.5, float(self.var_iv.get() or 1.0))
+        except ValueError:
+            MsgBox(self, "設定有誤", "區域與間隔要是數字（區域可用「框選範圍」自動填）。",
+                   kind="error")
+            self.grab_set()
+            return None
+        if not self.rules:
+            MsgBox(self, "還差一步", "至少新增一條觸發規則。")
+            self.grab_set()
+            return None
+        return {"window": self.var_window.get().strip(), "region": region,
+                "interval": iv, "rules": self.rules}
+
+    def _save(self):
+        out = self._collect()
+        if out:
+            self.result = out
+            self.destroy()
+
+    def _save_start(self):
+        out = self._collect()
+        if out:
+            self.result = out
+            self.start_now = True
+            self.destroy()
+
+
+class ChatRuleDialog(BaseModal):
+    """單條觸發規則：觸發文字 → 按單鍵或觸發組合，附冷卻秒數。"""
+
+    def __init__(self, parent, app, rule=None):
+        super().__init__(parent, "編輯規則" if rule else "新增規則")
+        self.app = app
+        self.result = None
+        r = rule or {}
+        f_body, f_bold = app.f_body, app.f_bold
+
+        r1 = ctk.CTkFrame(self, fg_color="transparent")
+        r1.pack(fill="x", padx=20, pady=(18, 4))
+        ctk.CTkLabel(r1, text="觸發文字", font=f_bold,
+                     text_color=COL_SUBTEXT).pack(side="left")
+        self.var_text = tk.StringVar(value=r.get("text", ""))
+        app._entry(r1, self.var_text, width=200).pack(side="left", padx=6)
+        ctk.CTkLabel(r1, text="（比對「包含」即可）", font=f_body,
+                     text_color=COL_SUBTEXT).pack(side="left")
+
+        r2 = ctk.CTkFrame(self, fg_color="transparent")
+        r2.pack(fill="x", padx=20, pady=4)
+        ctk.CTkLabel(r2, text="動作", font=f_bold,
+                     text_color=COL_SUBTEXT).pack(side="left")
+        self.seg_act = ctk.CTkSegmentedButton(
+            r2, values=["按單鍵", "觸發組合"], font=f_body, height=28,
+            corner_radius=8, fg_color=COL_FIELD, selected_color=COL_GOLD_DARK,
+            selected_hover_color=COL_GOLD_DARK_HOVER,
+            unselected_color="#2C2C2C", unselected_hover_color="#383838",
+            text_color="#EDEAE0")
+        self.seg_act.set("觸發組合" if r.get("combo") else "按單鍵")
+        self.seg_act.pack(side="left", padx=(8, 14))
+        ctk.CTkLabel(r2, text="按鍵", font=f_body, text_color=COL_TEXT).pack(side="left")
+        self.var_key = tk.StringVar(value=r.get("key", ""))
+        app._entry(r2, self.var_key, width=70).pack(side="left", padx=(4, 12))
+        ctk.CTkLabel(r2, text="組合", font=f_body, text_color=COL_TEXT).pack(side="left")
+        combo_names = [c.get("name", "") for c in app.prof().get("combos", [])]
+        self.cmb_combo = ctk.CTkComboBox(
+            r2, width=140, height=28, state="readonly",
+            values=combo_names or ["（無組合）"],
+            font=f_body, dropdown_font=f_body,
+            fg_color=COL_FIELD, border_color=COL_BORDER,
+            button_color="#303030", button_hover_color="#3C3C3C",
+            dropdown_fg_color="#232323", dropdown_hover_color="#333333",
+            dropdown_text_color=COL_TEXT, text_color=COL_TEXT)
+        self.cmb_combo.set(r.get("combo") or (combo_names[0] if combo_names else "（無組合）"))
+        self.cmb_combo.pack(side="left", padx=4)
+
+        r3 = ctk.CTkFrame(self, fg_color="transparent")
+        r3.pack(fill="x", padx=20, pady=4)
+        ctk.CTkLabel(r3, text="冷卻", font=f_bold,
+                     text_color=COL_SUBTEXT).pack(side="left")
+        self.var_cd = tk.StringVar(value=str(r.get("cooldown", 5.0)))
+        app._entry(r3, self.var_cd, width=56).pack(side="left", padx=6)
+        ctk.CTkLabel(r3, text="秒（觸發後這段時間內不再重複觸發）", font=f_body,
+                     text_color=COL_TEXT).pack(side="left")
+
+        brow = ctk.CTkFrame(self, fg_color="transparent")
+        brow.pack(fill="x", padx=20, pady=(12, 16))
+        make_btn(brow, "儲存", self._save, kind="primary", width=88).pack(side="right")
+        make_btn(brow, "取消", self.destroy, width=88).pack(side="right", padx=(0, 8))
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.run_modal(parent)
+
+    def _save(self):
+        text = self.var_text.get().strip()
+        if not text:
+            MsgBox(self, "少了觸發文字", "填入要監看的聊天文字（比對「包含」）。")
+            self.grab_set()
+            return
+        try:
+            cd = max(0.0, float(self.var_cd.get() or 5.0))
+        except ValueError:
+            MsgBox(self, "設定有誤", "冷卻秒數要是數字。", kind="error")
+            self.grab_set()
+            return
+        out = {"text": text, "cooldown": cd}
+        if self.seg_act.get() == "觸發組合":
+            name = self.cmb_combo.get()
+            if not name or name == "（無組合）":
+                MsgBox(self, "設定有誤", "這個角色還沒有組合可以觸發，先建組合或改用「按單鍵」。",
+                       kind="error")
+                self.grab_set()
+                return
+            out["combo"] = name
+        else:
+            key = self.var_key.get().strip()
+            if not key:
+                MsgBox(self, "設定有誤", "填入要按的按鍵（如 f、1、space、右鍵）。",
+                       kind="error")
+                self.grab_set()
+                return
+            out["key"] = key
+        self.result = out
+        self.destroy()
 
 
 if __name__ == "__main__":
