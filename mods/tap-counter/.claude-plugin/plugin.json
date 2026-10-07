@@ -1,0 +1,6 @@
+{
+  "name": "tap-counter",
+  "version": "0.1.0",
+  "description": "一個簡單的計數器面板：按按鈕加一、每十下 toast 一次、狀態列顯示工具呼叫數",
+  "types": "./types/index.d.ts"
+}
