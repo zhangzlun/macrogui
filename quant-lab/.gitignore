@@ -1,0 +1,5 @@
+# 課程輸出的圖表
+output/
+# 下載的行情快取
+data/cache/
+.pytest_cache/

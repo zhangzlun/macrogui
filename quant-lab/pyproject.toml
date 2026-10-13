@@ -1,0 +1,25 @@
+[project]
+name = "quant-lab"
+version = "0.1.0"
+description = "量化分析學習專案：報酬與風險、回測、策略比較、過度擬合、投資組合（僅供學習，非投資建議）"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "matplotlib>=3.8",
+    "yfinance>=0.2.40",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["quantlab"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
