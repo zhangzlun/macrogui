@@ -11,6 +11,8 @@
 - 跑完 `lessons/01_returns_and_risk.py`，標的：SPY（2005 起）、0050.TW（2014-01-03 起）
 - 講解五個觀念：簡單／對數報酬、年化報酬與波動度、夏普值、肥尾、回撤、波動群聚
 - 發現 Yahoo Finance 的 0050.TW 還原股價在 2014-01-02 之前不可靠（見下方已知問題）
+- 第一課互動網頁（Claude Artifact）：https://claude.ai/artifact/DT1pTUXc2ZBJv7TVkns6VJ
+  - 可切換 SPY／0050、拖拉期間，六個小節 + 四題測驗；之後每課比照做一頁
 
 ## 下次繼續
 
