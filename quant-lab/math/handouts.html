@@ -1,0 +1,894 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>量化數學講義</title>
+<style>
+:root{--bg:#f7f6f2;--surface:#fff;--ink:#1a1917;--ink2:#55534f;--muted:#8a8780;--line:#e2e0d8;--accent:#1c5cab;--soft:#e8f0fb;--code:#f1efe8;}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#121211;--surface:#1b1b1a;--ink:#efeee9;--ink2:#c2c0b8;--muted:#8a8780;--line:#2d2d2a;--accent:#6da7ec;--soft:#1e2b3d;--code:#232321;}}
+:root[data-theme=dark]{--bg:#121211;--surface:#1b1b1a;--ink:#efeee9;--ink2:#c2c0b8;--muted:#8a8780;--line:#2d2d2a;--accent:#6da7ec;--soft:#1e2b3d;--code:#232321;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.8 -apple-system,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:0 16px 80px}
+header{padding:40px 0 20px;border-bottom:1px solid var(--line)}
+header h1{font-size:2rem;margin:0 0 8px}
+header p{color:var(--ink2);margin:0 0 6px}
+.note{font-size:.85rem;color:var(--ink2);border-left:3px solid #e0703a;padding:4px 12px;margin-top:14px;background:var(--surface)}
+nav{display:grid;gap:8px;margin:20px 0 8px}
+nav a{display:flex;gap:12px;align-items:center;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);text-decoration:none;font-weight:500}
+nav .n{font:500 .85rem ui-monospace,Menlo,monospace;color:var(--accent)}
+section{padding-top:36px;border-top:1px solid var(--line);margin-top:36px}
+.eyebrow{font:500 .75rem ui-monospace,Menlo,monospace;letter-spacing:.12em;color:var(--muted)}
+section>h1{font-size:1.7rem;margin:4px 0 12px}
+h2{font-size:1.25rem;margin:32px 0 8px;padding-top:8px}
+h3{font-size:1.05rem;margin:22px 0 6px}
+p{margin:0 0 12px}
+a{color:var(--accent)}
+pre{background:var(--code);border-radius:8px;padding:12px 14px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;font-size:.9rem;line-height:1.6;margin:10px 0 14px}
+code{font-family:ui-monospace,Menlo,monospace;font-size:.9em}
+p code,li code,td code{background:var(--code);padding:1px 5px;border-radius:4px}
+.tbl{overflow-x:auto;margin:10px 0 16px}
+table{border-collapse:collapse;width:100%;font-size:.92rem;background:var(--surface)}
+th,td{border-bottom:1px solid var(--line);padding:7px 10px;text-align:left;white-space:nowrap}
+th{color:var(--muted);font-weight:500;font-size:.82rem}
+blockquote{margin:12px 0;padding:6px 14px;border-left:3px solid var(--accent);background:var(--soft);border-radius:4px}
+hr{border:0;border-top:1px dashed var(--line);margin:28px 0}
+ol,ul{padding-left:1.4em} li{margin:4px 0}
+details.answers{margin:16px 0;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+details.answers summary{cursor:pointer;padding:12px 16px;font-weight:600;color:var(--accent);list-style:none}
+details.answers summary::before{content:"▸ ";}
+details.answers[open] summary::before{content:"▾ ";}
+details.answers>*:not(summary){margin-left:16px;margin-right:16px}
+details.answers ol{padding-bottom:10px}
+.top{text-align:right;font-size:.85rem;margin-top:20px}
+</style></head>
+<body><div class="wrap" id="top">
+<header>
+<h1>量化數學講義</h1>
+<p>課程程式只印出算好的答案，這份講義教你那些數字怎麼算出來。</p>
+<p>每份都有：公式、白話解釋、手算例題、練習題。解答收起來了，先自己算再點開。</p>
+<div class="note">僅供學習，非投資建議。需要的數學只有加減乘除、百分比、次方、開根號；手機計算機橫過來就有，ln 和 eˣ 也在裡面。</div>
+</header>
+<nav><a href="#h1"><span class="n">01</span>報酬與風險</a><a href="#h2"><span class="n">02</span>回測的計算</a><a href="#h3"><span class="n">03</span>指標與策略</a><a href="#h4"><span class="n">04</span>過度擬合的機率</a><a href="#h5"><span class="n">05</span>投資組合</a></nav>
+<section id="h1"><div class="eyebrow">講義 01</div><h1>報酬與風險</h1>
+<p>對應第一課。</p>
+<h2>1. 簡單報酬率</h2>
+<pre><code>報酬率 = 今天價格 ÷ 昨天價格 − 1
+</code></pre>
+<p><strong>白話</strong>：漲跌了百分之幾。</p>
+<p><strong>例題</strong>：昨天 100 元，今天 110 元。</p>
+<pre><code>110 ÷ 100 − 1 = 1.10 − 1 = 0.10 = 10%
+</code></pre>
+<h2>2. 多天的報酬要「連乘」，不能相加</h2>
+<pre><code>總報酬 = (1 + 第一天報酬) × (1 + 第二天報酬) × … − 1
+</code></pre>
+<p><strong>白話</strong>：第二天的漲跌，是在第一天「已經變動過的金額」上再漲跌。</p>
+<p><strong>例題</strong>：先漲 10%，再跌 10%，是不是回到原點？</p>
+<pre><code>(1 + 0.10) × (1 − 0.10) − 1
+= 1.10 × 0.90 − 1
+= 0.99 − 1
+= −1%
+</code></pre>
+<p><strong>沒有回到原點，還虧了 1%。</strong> 100 元漲 10% 變 110 元，110 元跌 10% 是跌掉 11 元，剩 99 元。</p>
+<p>這也是為什麼「跌下去比漲回來容易」，第 6 節的回撤會再講。</p>
+<h2>3. 對數報酬率</h2>
+<pre><code>對數報酬 = ln(今天價格 ÷ 昨天價格)
+換回簡單報酬 = e^(對數報酬) − 1
+</code></pre>
+<p><strong>白話</strong>：<code>ln</code> 是「e 要幾次方才會等於這個數」，e ≈ 2.718。
+你不用懂它的原理，只要知道它的一個好用性質：<strong>對數報酬可以直接相加</strong>。</p>
+<p><strong>例題</strong>：一樣先漲 10%、再跌 10%。</p>
+<pre><code>第一天：ln(1.10) = 0.09531
+第二天：ln(0.90) = −0.10536
+相加：  0.09531 + (−0.10536) = −0.01005
+換回來：e^(−0.01005) − 1 = −0.0100 = −1%
+</code></pre>
+<p>跟第 2 節連乘的答案一樣。漲跌幅小的時候，對數報酬和簡單報酬幾乎相同。
+第一課印出的「最近五天」那張表就在對照這兩種。</p>
+<h2>4. 年化報酬（CAGR）</h2>
+<pre><code>年化報酬 = (期末金額 ÷ 期初金額) ^ (1 ÷ 年數) − 1
+年數 = 交易日天數 ÷ 252
+</code></pre>
+<p><strong>白話</strong>：如果每年都賺一樣多的百分比，要每年賺多少，才會從期初變成期末？
+一年大約有 252 個交易日（扣掉週末和假日），所以用天數除以 252 換成年。</p>
+<p><strong>例題</strong>：100 元，10 年後變 200 元。</p>
+<pre><code>(200 ÷ 100) ^ (1 ÷ 10) − 1
+= 2 ^ 0.1 − 1
+= 1.0718 − 1
+= 7.18%
+</code></pre>
+<p><strong>驗算</strong>：1.0718 乘自己 10 次 ≈ 2，沒錯。
+注意不是 100% ÷ 10 年 = 10%，因為報酬會「利滾利」。</p>
+<h2>5. 平均數、標準差、年化波動度</h2>
+<h3>平均數</h3>
+<pre><code>平均數 = 全部加起來 ÷ 個數
+</code></pre>
+<h3>標準差</h3>
+<pre><code>1. 每個數減掉平均數（叫做「離差」）
+2. 每個離差平方
+3. 全部加起來，除以 (個數 − 1)  ← 這叫「變異數」
+4. 開根號  ← 這就是標準差
+</code></pre>
+<p><strong>白話</strong>：每天的報酬平均離「平均值」多遠。越大代表上下晃得越厲害。
+第 3 步除以「個數 − 1」而不是「個數」，是統計上用樣本估計時的修正，記住就好。</p>
+<p><strong>例題</strong>：五天的日報酬是 +1%、−2%、+3%、0%、−2%。</p>
+<pre><code>平均數：(1 − 2 + 3 + 0 − 2) ÷ 5 = 0 ÷ 5 = 0%
+
+離差：    1   −2    3    0   −2      （每個減 0）
+平方：    1    4    9    0    4
+加總：    1 + 4 + 9 + 0 + 4 = 18
+除以 4：  18 ÷ 4 = 4.5
+開根號：  √4.5 = 2.12
+
+日標準差 = 2.12%
+</code></pre>
+<h3>年化波動度</h3>
+<pre><code>年化波動度 = 日標準差 × √252
+√252 ≈ 15.87
+</code></pre>
+<p><strong>白話</strong>：把「每天晃多少」換算成「一年晃多少」。</p>
+<p><strong>為什麼是乘 √252 而不是乘 252？</strong>
+假設每天的漲跌互不相關，那麼「變異數」（標準差的平方）可以一天一天加起來：
+一年的變異數 = 252 × 日變異數。開根號回來，就是 √252 × 日標準差。</p>
+<p><strong>例題</strong>：上面那五天，日標準差 2.12%。</p>
+<pre><code>2.12% × 15.87 = 33.7%
+</code></pre>
+<p>一般大盤的年化波動度大約 15%～20%，個股常常 30% 以上。</p>
+<h2>6. 夏普值</h2>
+<pre><code>夏普值 = 年化（平均報酬 − 無風險利率） ÷ 年化波動度
+程式裡的算法 = 日平均超額報酬 ÷ 日標準差 × √252
+</code></pre>
+<p><strong>白話</strong>：每承受 1 單位的波動，換到多少報酬。可以拿來比較「報酬高但很晃」和「報酬低但很穩」的兩個東西。
+大致的感覺：0.5 普通、1 不錯、2 以上要先懷疑回測有沒有錯。</p>
+<p><strong>例題</strong>：某資產日平均報酬 0.04%，日標準差 1%，無風險利率當作 0。</p>
+<pre><code>0.04% ÷ 1% × 15.87 = 0.04 × 15.87 = 0.63
+</code></pre>
+<p><strong>例題 2（有無風險利率）</strong>：某策略年化報酬 10%，年化波動度 16%，無風險利率（例如定存）2%。</p>
+<pre><code>(10% − 2%) ÷ 16% = 8 ÷ 16 = 0.5
+</code></pre>
+<p>先把報酬扣掉「什麼都不做也拿得到」的無風險利率，剩下的才是冒風險換來的。</p>
+<p><strong>為什麼分子分母都乘時間，結果只乘 √252？</strong>
+平均報酬年化要乘 252，標準差年化要乘 √252，相除：252 ÷ √252 = √252。</p>
+<h2>7. 常態分布與「3 個標準差」</h2>
+<pre><code>z 分數 = (某天報酬 − 平均報酬) ÷ 標準差
+</code></pre>
+<p><strong>白話</strong>：這天的漲跌是「幾個標準差」那麼極端。</p>
+<p>如果報酬是常態分布（鐘形曲線）：</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>範圍</th>
+<th>落在範圍內的比例</th>
+<th>落在範圍外的比例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>±1 個標準差</td>
+<td>68%</td>
+<td>32%</td>
+</tr>
+<tr>
+<td>±2 個標準差</td>
+<td>95%</td>
+<td>5%</td>
+</tr>
+<tr>
+<td>±3 個標準差</td>
+<td>99.73%</td>
+<td>0.27%</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>例題</strong>：第一課的資料有 5682 天。如果是常態分布，超過 ±3 個標準差的天數應該是：</p>
+<pre><code>5682 × 0.27% = 5682 × 0.0027 ≈ 15 天
+</code></pre>
+<p>實際上常常是這個數字的好幾倍。這就是「肥尾」：極端行情比常態分布說的更常發生。
+用常態分布估計風險，會低估大跌的機率。</p>
+<h3>偏態和峰態</h3>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>指標</th>
+<th>怎麼算（概念）</th>
+<th>怎麼讀</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>偏態</td>
+<td>每天 z 分數的「三次方」取平均</td>
+<td>負數：大跌比大漲更極端</td>
+</tr>
+<tr>
+<td>峰態</td>
+<td>每天 z 分數的「四次方」取平均，再減 3</td>
+<td>大於 0：極端值比常態分布多</td>
+</tr>
+</tbody>
+</table></div>
+<p>三次方保留正負號，所以看得出往哪邊偏；四次方把極端值放得很大，所以對肥尾很敏感。
+pandas 實際用的公式還多了樣本修正，數字會差一點，不用手算。</p>
+<h2>8. 回撤與最大回撤</h2>
+<pre><code>回撤 = 目前淨值 ÷ 到目前為止的最高淨值 − 1
+最大回撤 = 所有回撤裡最小（最負）的那個
+</code></pre>
+<p><strong>白話</strong>：你現在離「帳面最高點」虧了多少。最大回撤是整段期間最痛的那一刻。</p>
+<p><strong>例題</strong>：淨值依序是 100、120、90、130、104。</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>天</th>
+<th>淨值</th>
+<th>到目前最高</th>
+<th>回撤</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>100</td>
+<td>100</td>
+<td>100 ÷ 100 − 1 = 0%</td>
+</tr>
+<tr>
+<td>2</td>
+<td>120</td>
+<td>120</td>
+<td>0%</td>
+</tr>
+<tr>
+<td>3</td>
+<td>90</td>
+<td>120</td>
+<td>90 ÷ 120 − 1 = −25%</td>
+</tr>
+<tr>
+<td>4</td>
+<td>130</td>
+<td>130</td>
+<td>0%</td>
+</tr>
+<tr>
+<td>5</td>
+<td>104</td>
+<td>130</td>
+<td>104 ÷ 130 − 1 = −20%</td>
+</tr>
+</tbody>
+</table></div>
+<p>最大回撤 = −25%。</p>
+<p><strong>容易算錯的地方</strong>：「最高」是指<strong>到那天為止的整段歷史最高</strong>，不是前一天。
+例如淨值 100、120、90、110、80：第 5 天的 80 要跟 120 比，<code>80 ÷ 120 − 1 = −33.3%</code>，
+不是跟前一天的 110 比。中間反彈到 110 沒有創新高，所以高點還是 120。</p>
+<h3>虧損之後要賺多少才回本</h3>
+<pre><code>回本需要的漲幅 = 1 ÷ (1 − 虧損比例) − 1
+</code></pre>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>虧損</th>
+<th>回本要漲</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>−10%</td>
+<td>+11.1%</td>
+</tr>
+<tr>
+<td>−20%</td>
+<td>+25%</td>
+</tr>
+<tr>
+<td>−30%</td>
+<td>+42.9%</td>
+</tr>
+<tr>
+<td>−50%</td>
+<td>+100%</td>
+</tr>
+<tr>
+<td>−75%</td>
+<td>+300%</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>例題</strong>：虧 50%。<code>1 ÷ (1 − 0.5) − 1 = 1 ÷ 0.5 − 1 = 2 − 1 = 100%</code>。
+100 元剩 50 元，要翻倍才回到 100 元。這就是為什麼量化特別重視控制回撤。</p>
+<h2>9. 滾動計算</h2>
+<pre><code>滾動 N 日的某指標 = 只用「最近 N 天」的資料算那個指標，每天往後挪一天重算
+</code></pre>
+<p><strong>白話</strong>：第一課的「一個月滾動波動度」，就是每天都用最近 21 個交易日算一次年化波動度。
+這樣可以看到波動度隨時間怎麼變化，而不是整段期間只有一個數字。</p>
+<hr />
+<h2>練習題</h2>
+<ol>
+<li>一檔股票從 50 元漲到 60 元，報酬率是多少？</li>
+<li>連續三天報酬是 +5%、−3%、+2%，三天的總報酬是多少？</li>
+<li>一筆投資 3 年從 100 萬變成 150 萬，年化報酬是多少？</li>
+<li>四天的日報酬是 +2%、0%、−2%、+4%。算出日標準差，再算年化波動度。</li>
+<li>某策略日平均報酬 0.05%，日標準差 1.2%。夏普值大約是多少？</li>
+<li>淨值依序是 1.0、1.3、1.1、0.9、1.2、1.4。最大回撤是多少？發生在哪一天？</li>
+<li>一個策略最大回撤 −40%。從谷底要漲多少才能回到前高？</li>
+<li>一段資料有 2520 天。如果報酬是常態分布，超過 ±2 個標準差的天數大約幾天？</li>
+</ol>
+<details class="answers"><summary>看解答</summary>
+<ol>
+<li><code>60 ÷ 50 − 1 = 0.2 = 20%</code></li>
+<li><code>1.05 × 0.97 × 1.02 − 1 = 1.03887 − 1 ≈ 3.89%</code>（不是 5 − 3 + 2 = 4%）</li>
+<li><code>1.5 ^ (1 ÷ 3) − 1 = 1.1447 − 1 ≈ 14.47%</code></li>
+<li>平均 <code>(2 + 0 − 2 + 4) ÷ 4 = 1%</code>。離差 1、−1、−3、3，平方 1、1、9、9，加總 20，<code>20 ÷ 3 = 6.67</code>，<code>√6.67 ≈ 2.58%</code>。年化 <code>2.58% × 15.87 ≈ 41%</code></li>
+<li><code>0.05 ÷ 1.2 × 15.87 ≈ 0.66</code></li>
+<li>最高點 1.3 之後跌到 0.9：<code>0.9 ÷ 1.3 − 1 ≈ −30.8%</code>，發生在第 4 天</li>
+<li><code>1 ÷ (1 − 0.4) − 1 = 1 ÷ 0.6 − 1 ≈ 66.7%</code></li>
+<li><code>2520 × 5% = 126</code> 天</li>
+</ol></details><p class="top"><a href="#top">回到目錄 ↑</a></p></section><section id="h2"><div class="eyebrow">講義 02</div><h1>回測的計算</h1>
+<p>對應第二課。</p>
+<h2>1. 部位與每日損益</h2>
+<pre><code>策略當天報酬 = 持有部位 × 標的當天報酬
+</code></pre>
+<p><strong>白話</strong>：部位是「拿多少比例的錢去買」。1 是全部，0.5 是一半，0 是空手。
+空手的錢放著不動，報酬是 0。</p>
+<p><strong>例題</strong>：持有 50% 部位，標的當天漲 2%。</p>
+<pre><code>0.5 × 2% = 1%
+</code></pre>
+<p>一半的錢賺了 2%，另一半不動，整體就是賺 1%。</p>
+<h2>2. 淨值曲線</h2>
+<pre><code>今天淨值 = 昨天淨值 × (1 + 今天策略報酬)
+</code></pre>
+<p><strong>例題</strong>：起始淨值 1，策略三天報酬 +1%、−2%、+3%。</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>天</th>
+<th>策略報酬</th>
+<th>淨值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>—</td>
+<td>1</td>
+</tr>
+<tr>
+<td>1</td>
+<td>+1%</td>
+<td>1 × 1.01 = 1.01</td>
+</tr>
+<tr>
+<td>2</td>
+<td>−2%</td>
+<td>1.01 × 0.98 = 0.9898</td>
+</tr>
+<tr>
+<td>3</td>
+<td>+3%</td>
+<td>0.9898 × 1.03 = 1.0195</td>
+</tr>
+</tbody>
+</table></div>
+<p>這就是講義 01 的「連乘」，只是一天一天寫出來。</p>
+<h2>3. 為什麼要延後一天才持有</h2>
+<pre><code>今天持有的部位 = 昨天收盤算出來的訊號
+</code></pre>
+<p><strong>白話</strong>：訊號要用收盤價算，收盤後才知道。知道的時候當天的漲跌已經發生了，
+你最早只能在收盤時買，賺的是「明天」的漲跌。</p>
+<p><strong>例題</strong>：價格依序 100、110、99、120。第 2 天收盤算出「買進」訊號。</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>天</th>
+<th>價格</th>
+<th>當天漲跌</th>
+<th>訊號（收盤算出）</th>
+<th>實際持有</th>
+<th>策略報酬</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>100</td>
+<td>—</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>2</td>
+<td>110</td>
+<td>+10%</td>
+<td><strong>1</strong></td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>3</td>
+<td>99</td>
+<td>−10%</td>
+<td>0</td>
+<td><strong>1</strong></td>
+<td>1 × (−10%) = −10%</td>
+</tr>
+<tr>
+<td>4</td>
+<td>120</td>
+<td>+21.2%</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+</tr>
+</tbody>
+</table></div>
+<p>第 2 天的 +10% 不屬於你，因為那時你還沒買。你買在第 2 天收盤，吃到第 3 天的 −10%。</p>
+<p>如果程式寫錯、沒有延後，就會變成「第 2 天賺到 +10%」，等於用未來的資訊交易。
+這就是第二課示範的「前視偏誤」。</p>
+<h2>4. 交易成本</h2>
+<pre><code>1 bp（基點）= 0.01% = 0.0001
+交易成本 = 換手率 × 單邊費率
+換手率 = 這次交易的部位變動量（全買或全賣 = 1）
+</code></pre>
+<p><strong>白話</strong>：每次買或賣都要付一點錢。買進一次付一次，賣出一次再付一次，所以一買一賣叫「來回」，付兩次。</p>
+<p><strong>例題 1</strong>：單邊 10 bp，從空手買到全倉。</p>
+<pre><code>換手率 = |1 − 0| = 1
+成本 = 1 × 0.001 = 0.1%
+</code></pre>
+<p><strong>例題 2</strong>：單邊 10 bp，交易 26 次，每次都是全進或全出。</p>
+<pre><code>大約：26 × 0.1% = 2.6%
+精確：1 − 0.999^26 = 2.57%
+</code></pre>
+<p>精確的算法是連乘，因為每次的成本是從「當時剩下的錢」扣。成本小的時候兩種算法很接近。</p>
+<p><strong>台股的真實成本</strong>（路線圖階段 3 會加進程式）：</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>項目</th>
+<th>費率</th>
+<th>什麼時候收</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>手續費</td>
+<td>0.1425%（券商常打折）</td>
+<td>買和賣都收</td>
+</tr>
+<tr>
+<td>證交稅</td>
+<td>股票 0.3%，ETF 0.1%</td>
+<td>只有賣出收</td>
+</tr>
+</tbody>
+</table></div>
+<p>一次股票來回大約 <code>0.1425% × 2 + 0.3% = 0.585%</code>，比第二課預設的 0.2% 高很多。</p>
+<h2>5. 簡單移動平均（SMA）</h2>
+<pre><code>N 日 SMA = 最近 N 天收盤價的平均
+</code></pre>
+<p><strong>例題</strong>：收盤價依序 10、11、12、11、13、14，算 5 日 SMA。</p>
+<pre><code>第 5 天：(10 + 11 + 12 + 11 + 13) ÷ 5 = 57 ÷ 5 = 11.4
+第 6 天：(11 + 12 + 11 + 13 + 14) ÷ 5 = 61 ÷ 5 = 12.2
+</code></pre>
+<p>第 1～4 天不到 5 天的資料，算不出來，程式裡是空值（NaN）。
+這就是為什麼 200 日均線策略的前 200 天一定空手。</p>
+<h2>6. 指數移動平均（EMA）</h2>
+<pre><code>α = 2 ÷ (N + 1)
+今天 EMA = α × 今天價格 + (1 − α) × 昨天 EMA
+第一天的 EMA = 第一天的價格
+</code></pre>
+<p><strong>白話</strong>：新的價格權重比較大，舊的價格權重一路遞減，所以反應比 SMA 快。</p>
+<p><strong>例題</strong>：3 日 EMA，<code>α = 2 ÷ (3 + 1) = 0.5</code>，價格 10、11、12、11。</p>
+<pre><code>第 1 天：10
+第 2 天：0.5 × 11 + 0.5 × 10    = 10.5
+第 3 天：0.5 × 12 + 0.5 × 10.5  = 11.25
+第 4 天：0.5 × 11 + 0.5 × 11.25 = 11.125
+</code></pre>
+<p>程式會把前 N − 1 天標成空值，從第 3 天的 11.25 開始顯示，因為資料太少時 EMA 還不穩定。</p>
+<h2>7. 均線交叉訊號</h2>
+<pre><code>訊號 = 1   如果 短均線 &gt; 長均線
+訊號 = 0   其他情況
+</code></pre>
+<p><strong>白話</strong>：短期平均價格高過長期平均，代表最近在漲，趨勢向上，就持有。</p>
+<hr />
+<h2>練習題</h2>
+<ol>
+<li>持有 80% 部位，標的當天跌 5%。策略當天報酬是多少？</li>
+<li>起始淨值 1，策略四天報酬 +2%、+2%、−4%、+1%。第 4 天淨值是多少？</li>
+<li>價格依序 50、52、51、55。第 1 天收盤訊號就是 1，之後一直是 1。第 2、3、4 天的策略報酬各是多少？</li>
+<li>單邊成本 15 bp，一個策略一年進出 12 次（每次全進或全出）。一年的成本大約多少？</li>
+<li>收盤價依序 20、22、21、23、24，算 3 日 SMA 的最後三個值。</li>
+<li>4 日 EMA 的 α 是多少？價格依序 10、12，第 2 天的 EMA 是多少？</li>
+<li>用台股真實成本，一檔 ETF 買進再賣出一次，總成本是多少（手續費不打折）？</li>
+</ol>
+<details class="answers"><summary>看解答</summary>
+<ol>
+<li><code>0.8 × (−5%) = −4%</code></li>
+<li><code>1 × 1.02 × 1.02 × 0.96 × 1.01 = 1.0088</code></li>
+<li>第 2 天 <code>52 ÷ 50 − 1 = 4%</code>；第 3 天 <code>51 ÷ 52 − 1 ≈ −1.92%</code>；第 4 天 <code>55 ÷ 51 − 1 ≈ 7.84%</code>。第 1 天收盤才買，所以從第 2 天開始算</li>
+<li>約 <code>12 × 0.15% = 1.8%</code>；精確 <code>1 − 0.9985^12 ≈ 1.79%</code></li>
+<li><code>(20 + 22 + 21) ÷ 3 = 21</code>、<code>(22 + 21 + 23) ÷ 3 = 22</code>、<code>(21 + 23 + 24) ÷ 3 ≈ 22.67</code></li>
+<li><code>α = 2 ÷ 5 = 0.4</code>；<code>0.4 × 12 + 0.6 × 10 = 10.8</code></li>
+<li><code>0.1425% × 2 + 0.1% = 0.385%</code></li>
+</ol></details><p class="top"><a href="#top">回到目錄 ↑</a></p></section><section id="h3"><div class="eyebrow">講義 03</div><h1>指標與策略</h1>
+<p>對應第三課。</p>
+<h2>1. 動能</h2>
+<pre><code>N 日動能 = 今天價格 ÷ N 天前的價格 − 1
+</code></pre>
+<p><strong>白話</strong>：過去 N 天總共漲跌多少。動能策略賭「漲的會繼續漲」。</p>
+<p><strong>例題</strong>：今天 120 元，126 個交易日前（約半年）是 100 元。</p>
+<pre><code>120 ÷ 100 − 1 = 20%  → 大於 0，持有
+</code></pre>
+<h2>2. RSI（相對強弱指標）</h2>
+<pre><code>1. 算每天的漲跌：今天價格 − 昨天價格
+2. 漲的日子記「漲幅」，跌的日子記「跌幅」（取正數），另一個記 0
+3. 平均漲幅、平均跌幅（最近 N 天）
+4. RS  = 平均漲幅 ÷ 平均跌幅
+5. RSI = 100 − 100 ÷ (1 + RS)
+</code></pre>
+<p><strong>白話</strong>：最近 N 天裡，漲的力道佔了多少。全部都在漲就是 100，全部都在跌就是 0。
+一般 70 以上叫「超買」，30 以下叫「超賣」。</p>
+<p><strong>例題</strong>：收盤價 10、11、12、11、13、14，用 5 天、簡單平均。</p>
+<pre><code>每天漲跌：    +1   +1   −1   +2   +1
+漲幅：         1    1    0    2    1   → 平均 5 ÷ 5 = 1.0
+跌幅：         0    0    1    0    0   → 平均 1 ÷ 5 = 0.2
+RS  = 1.0 ÷ 0.2 = 5
+RSI = 100 − 100 ÷ (1 + 5) = 100 − 16.7 = 83.3
+</code></pre>
+<p><strong>程式裡的版本稍有不同</strong>：程式用的是「Wilder 平滑法」，平均的方式類似 EMA，
+α = 1 ÷ N，越近的日子權重越大。所以程式算出的 RSI 跟手算的簡單平均版不會完全一樣，
+但概念相同。</p>
+<h2>3. RSI 均值回歸策略</h2>
+<pre><code>RSI &lt; 30 → 買進，之後一直持有
+RSI &gt; 70 → 賣出，之後一直空手
+中間     → 維持原本的狀態
+</code></pre>
+<p><strong>白話</strong>：跌太多就買，賭它會彈回來；漲太多就賣。跟動能策略的想法相反。</p>
+<h2>4. 波動度目標</h2>
+<pre><code>部位 = 目標波動度 ÷ 最近的實際波動度
+部位上限 = 1（不借錢）
+</code></pre>
+<p><strong>白話</strong>：市場越晃，買越少，讓整體的晃動維持在差不多的水準。</p>
+<p><strong>例題</strong>：目標 15%。</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>最近波動度</th>
+<th>計算</th>
+<th>部位</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>30%</td>
+<td>15 ÷ 30 = 0.5</td>
+<td>0.5</td>
+</tr>
+<tr>
+<td>15%</td>
+<td>15 ÷ 15 = 1</td>
+<td>1</td>
+</tr>
+<tr>
+<td>10%</td>
+<td>15 ÷ 10 = 1.5</td>
+<td>超過上限，取 1</td>
+</tr>
+</tbody>
+</table></div>
+<h2>5. 索提諾值</h2>
+<pre><code>下檔偏差 = √( 每天 min(報酬, 0) 的平方，取平均 )
+索提諾值 = 日平均報酬 ÷ 下檔偏差 × √252
+</code></pre>
+<p><strong>白話</strong>：夏普值把「大漲」也算成風險，但投資人只怕跌。索提諾值只把下跌的部分當風險。</p>
+<p><strong>例題</strong>：五天報酬 +2%、−1%、+3%、0%、−1%。</p>
+<pre><code>平均：(2 − 1 + 3 + 0 − 1) ÷ 5 = 0.6%
+
+標準差（講義 01 的方法）：
+  離差 1.4  −1.6  2.4  −0.6  −1.6
+  平方 1.96  2.56  5.76  0.36  2.56   加總 13.2
+  13.2 ÷ 4 = 3.3，√3.3 = 1.817%
+
+下檔偏差：
+  只留負的：0  −1  0  0  −1
+  平方：    0   1  0  0   1   加總 2
+  2 ÷ 5 = 0.4，√0.4 = 0.632%
+
+日夏普值   = 0.6 ÷ 1.817 = 0.33
+日索提諾值 = 0.6 ÷ 0.632 = 0.95
+</code></pre>
+<p>這組資料大漲多、小跌少，所以索提諾值比夏普值高很多。
+（下檔偏差除以「個數」，不是「個數 − 1」，這是常見的寫法。）</p>
+<h2>6. 卡瑪值</h2>
+<pre><code>卡瑪值 = 年化報酬 ÷ |最大回撤|
+</code></pre>
+<p><strong>例題</strong>：年化 8%，最大回撤 −20%。<code>8 ÷ 20 = 0.4</code></p>
+<p><strong>白話</strong>：每承受 1% 的最大回撤，每年換到多少報酬。</p>
+<h2>7. 相關係數</h2>
+<pre><code>1. 兩組數字各自算平均，各自算離差
+2. 對應的離差相乘，全部加起來  ← 分子
+3. 兩組各自的「離差平方和」相乘，再開根號  ← 分母
+4. 相關係數 = 分子 ÷ 分母
+</code></pre>
+<p><strong>白話</strong>：兩個東西是不是一起漲跌，介於 −1 到 1。
+1 是完全同步，0 是沒關係，−1 是完全相反。</p>
+<p><strong>例題</strong>：A 四天報酬 1、2、3、4，B 四天報酬 1、3、2、4。</p>
+<pre><code>平均：A = 2.5，B = 2.5
+A 離差：−1.5  −0.5   0.5  1.5
+B 離差：−1.5   0.5  −0.5  1.5
+相乘：   2.25 −0.25 −0.25 2.25   加總 = 4
+
+A 離差平方和：2.25 + 0.25 + 0.25 + 2.25 = 5
+B 離差平方和：5
+分母：√(5 × 5) = 5
+
+相關係數 = 4 ÷ 5 = 0.8
+</code></pre>
+<h2>8. 日勝率與持倉時間</h2>
+<pre><code>日勝率   = 賺錢的天數 ÷ 有損益的天數（報酬剛好 0 的不算）
+持倉時間 = 有持倉的天數 ÷ 總天數
+</code></pre>
+<p><strong>注意</strong>：勝率高不代表賺錢。勝率 90% 但每次小賺、偶爾大虧，一樣會虧。</p>
+<hr />
+<h2>練習題</h2>
+<ol>
+<li>今天 85 元，半年前 100 元。動能是多少？動能策略會不會持有？</li>
+<li>五天收盤價 20、21、20、22、23。用簡單平均算 4 天的 RSI（只看最後 4 天的漲跌）。</li>
+<li>目標波動度 12%，最近波動度 24%。部位是多少？如果最近波動度 8% 呢？</li>
+<li>年化報酬 6%，最大回撤 −30%。卡瑪值是多少？</li>
+<li>三天報酬 +1%、−2%、+4%。算下檔偏差（除以個數）。</li>
+<li>A 三天報酬 1、2、3，B 三天報酬 3、2、1。相關係數是多少？先猜再算。</li>
+</ol>
+<details class="answers"><summary>看解答</summary>
+<ol>
+<li><code>85 ÷ 100 − 1 = −15%</code>，小於 0，空手</li>
+<li>漲跌 +1、−1、+2、+1。平均漲幅 <code>(1 + 0 + 2 + 1) ÷ 4 = 1</code>，平均跌幅 <code>(0 + 1 + 0 + 0) ÷ 4 = 0.25</code>。<code>RS = 4</code>，<code>RSI = 100 − 100 ÷ 5 = 80</code></li>
+<li><code>12 ÷ 24 = 0.5</code>；<code>12 ÷ 8 = 1.5</code>，超過上限取 1</li>
+<li><code>6 ÷ 30 = 0.2</code></li>
+<li>只留負的 0、−2、0，平方加總 4，<code>4 ÷ 3 = 1.33</code>，<code>√1.33 ≈ 1.15%</code></li>
+<li>完全相反，−1。離差 A：−1、0、1；B：1、0、−1。相乘加總 −2；平方和各 2，分母 <code>√4 = 2</code>；<code>−2 ÷ 2 = −1</code></li>
+</ol></details><p class="top"><a href="#top">回到目錄 ↑</a></p></section><section id="h4"><div class="eyebrow">講義 04</div><h1>過度擬合的機率</h1>
+<p>對應第四課。這一課的數學是機率，用來說明「為什麼試越多次，越容易被運氣騙」。</p>
+<h2>1. 試很多次，總有一次會「成功」</h2>
+<pre><code>至少一次成功的機率 = 1 − (每次都失敗的機率) ^ 試的次數
+                   = 1 − (1 − p) ^ N
+</code></pre>
+<p><strong>白話</strong>：一次「運氣好」的機率很小，但試很多次就幾乎一定會遇到。</p>
+<p><strong>例題</strong>：假設一個完全沒用的策略，回測「看起來很棒」的機率是 5%。</p>
+<pre><code>試 1 次：   1 − 0.95^1   = 5%
+試 20 次：  1 − 0.95^20  = 1 − 0.358 = 64%
+試 100 次： 1 − 0.95^100 = 1 − 0.006 = 99.4%
+</code></pre>
+<p>試 20 組參數，就有 64% 的機會「找到」一個看起來很棒、其實沒用的策略。
+第四課試了 30 組均線參數，冠軍可能只是這樣來的。</p>
+<h2>2. 夏普值的誤差</h2>
+<pre><code>夏普值的標準誤差 ≈ 1 ÷ √(年數)
+95% 的範圍 ≈ 算出來的夏普值 ± 2 × 標準誤差
+</code></pre>
+<p><strong>白話</strong>：用歷史資料算出的夏普值，只是「估計值」，資料越短越不準。
+（這是夏普值接近 0 時的簡化公式，夏普值越大誤差會再大一點。）</p>
+<p><strong>例題</strong>：用 20 年資料，算出夏普值 0.5。</p>
+<pre><code>標準誤差 ≈ 1 ÷ √20 = 1 ÷ 4.47 = 0.22
+95% 範圍 ≈ 0.5 ± 0.45 → 大約 0.05 到 0.95
+</code></pre>
+<p>意思是：真正的夏普值可能低到接近 0，也可能高到接近 1。
+所以兩個策略夏普值 0.45 和 0.55，<strong>根本分不出誰比較好</strong>。</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>資料長度</th>
+<th>標準誤差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 年</td>
+<td>1.0</td>
+</tr>
+<tr>
+<td>4 年</td>
+<td>0.5</td>
+</tr>
+<tr>
+<td>10 年</td>
+<td>0.32</td>
+</tr>
+<tr>
+<td>25 年</td>
+<td>0.2</td>
+</tr>
+</tbody>
+</table></div>
+<p>只有 1 年資料時，夏普值 1.5 的策略，真實夏普值可能是負的。</p>
+<h2>3. 訓練期與測試期</h2>
+<pre><code>訓練期：用來挑參數的資料
+測試期：挑完之後才第一次看的資料
+</code></pre>
+<p><strong>白話</strong>：考試前偷看考卷，分數再高也不代表會。測試期就是「沒偷看過的考卷」。
+規則只有一條：<strong>看過測試期的結果之後，就不能再回去改參數</strong>，不然測試期也變成訓練期了。</p>
+<h2>4. 等級相關係數（Spearman）</h2>
+<pre><code>1. 把兩組數字各自換成名次（第 1 名、第 2 名…）
+2. 對名次算一般的相關係數（講義 03 第 7 節）
+</code></pre>
+<p><strong>白話</strong>：只看「排名順序有沒有一致」，不看數字差多少。
+第四課用它檢查：訓練期排名高的參數，測試期是不是也排名高。</p>
+<p><strong>例題</strong>：四組參數的夏普值。</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>參數</th>
+<th>訓練期夏普</th>
+<th>訓練名次</th>
+<th>測試期夏普</th>
+<th>測試名次</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A</td>
+<td>0.9</td>
+<td>1</td>
+<td>0.1</td>
+<td>4</td>
+</tr>
+<tr>
+<td>B</td>
+<td>0.7</td>
+<td>2</td>
+<td>0.4</td>
+<td>1</td>
+</tr>
+<tr>
+<td>C</td>
+<td>0.5</td>
+<td>3</td>
+<td>0.2</td>
+<td>3</td>
+</tr>
+<tr>
+<td>D</td>
+<td>0.3</td>
+<td>4</td>
+<td>0.3</td>
+<td>2</td>
+</tr>
+</tbody>
+</table></div>
+<p>對名次算相關係數：</p>
+<pre><code>訓練名次 1  2  3  4    平均 2.5，離差 −1.5  −0.5   0.5   1.5
+測試名次 4  1  3  2    平均 2.5，離差  1.5  −1.5   0.5  −0.5
+相乘：                               −2.25  0.75  0.25 −0.75  加總 −2
+兩邊離差平方和都是 5，分母 = √(5 × 5) = 5
+
+等級相關係數 = −2 ÷ 5 = −0.4
+</code></pre>
+<p>負數：訓練期越好的，測試期反而越差。訓練期冠軍 A 在測試期墊底。</p>
+<h2>5. 滾動前進驗證</h2>
+<pre><code>第 1 輪：用第 1～3 年挑參數 → 在第 4 年測試
+第 2 輪：用第 2～4 年挑參數 → 在第 5 年測試
+第 3 輪：用第 3～5 年挑參數 → 在第 6 年測試
+…
+最後把每一輪「測試的那一年」接起來，算整體績效
+</code></pre>
+<p><strong>白話</strong>：模擬你真的照這套流程操作：每年用過去三年挑參數，然後實際用一年。
+接起來的測試期績效，才是比較誠實的「這套方法實戰表現」。</p>
+<hr />
+<h2>練習題</h2>
+<ol>
+<li>一個沒用的策略回測「看起來很棒」的機率是 10%。試 10 組參數，至少一組看起來很棒的機率是多少？</li>
+<li>用 9 年資料算出夏普值 0.6。標準誤差大約多少？95% 範圍大約是多少？</li>
+<li>至少要多少年的資料，夏普值的標準誤差才會小於 0.25？</li>
+<li>三組參數，訓練期名次 1、2、3，測試期名次 3、2、1。等級相關係數是多少？</li>
+<li>你有 10 年資料，想做「訓練 4 年、測試 2 年」的滾動前進，每輪往後挪 2 年。總共能做幾輪？</li>
+</ol>
+<details class="answers"><summary>看解答</summary>
+<ol>
+<li><code>1 − 0.9^10 = 1 − 0.349 ≈ 65%</code></li>
+<li><code>1 ÷ √9 = 1 ÷ 3 ≈ 0.33</code>；範圍約 <code>0.6 ± 0.67</code>，大約 −0.07 到 1.27</li>
+<li><code>1 ÷ √年數 &lt; 0.25</code> → <code>√年數 &gt; 4</code> → 年數 &gt; 16 年</li>
+<li>名次完全相反，−1</li>
+<li>訓練＋測試要 6 年。起點可以是第 0、2、4 年（第 4 年起算剛好用到第 10 年），共 3 輪</li>
+</ol></details><p class="top"><a href="#top">回到目錄 ↑</a></p></section><section id="h5"><div class="eyebrow">講義 05</div><h1>投資組合</h1>
+<p>對應第五課。這一課的數學說明了「分散」為什麼有用。</p>
+<h2>1. 組合的報酬</h2>
+<pre><code>組合報酬 = 權重A × 報酬A + 權重B × 報酬B + …
+</code></pre>
+<p><strong>例題</strong>：60% 股票、40% 債券。今天股票 +2%，債券 −1%。</p>
+<pre><code>0.6 × 2% + 0.4 × (−1%) = 1.2% − 0.4% = 0.8%
+</code></pre>
+<h2>2. 組合的波動度：分散的核心</h2>
+<p>兩個資產時：</p>
+<pre><code>組合變異數 = wA² × σA² + wB² × σB² + 2 × wA × wB × ρ × σA × σB
+組合波動度 = √組合變異數
+
+w = 權重，σ = 波動度，ρ = 兩者的相關係數
+</code></pre>
+<p><strong>白話</strong>：組合的波動不是兩個波動的平均。相關係數 ρ 越低，組合越穩。</p>
+<p><strong>例題</strong>：兩個資產波動度都是 20%，各放 50%。</p>
+<pre><code>共同部分：wA² × σA² + wB² × σB²
+         = 0.25 × 0.04 + 0.25 × 0.04 = 0.02
+
+相關項：  2 × 0.5 × 0.5 × ρ × 0.2 × 0.2 = 0.02 × ρ
+</code></pre>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>相關係數 ρ</th>
+<th>組合變異數</th>
+<th>組合波動度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1（完全同步）</td>
+<td>0.02 + 0.02 = 0.04</td>
+<td>√0.04 = 20%</td>
+</tr>
+<tr>
+<td>0.5</td>
+<td>0.02 + 0.01 = 0.03</td>
+<td>√0.03 = 17.3%</td>
+</tr>
+<tr>
+<td>0（無關）</td>
+<td>0.02</td>
+<td>√0.02 = 14.1%</td>
+</tr>
+<tr>
+<td>−1（完全相反）</td>
+<td>0.02 − 0.02 = 0</td>
+<td>0%</td>
+</tr>
+</tbody>
+</table></div>
+<p>報酬不變（兩個資產報酬一樣時，組合報酬也一樣），波動卻下降了。
+這就是為什麼分散被稱為「唯一的免費午餐」。
+現實中很難找到 ρ 是負的資產，但只要不是 1，就有好處。</p>
+<h2>3. 反波動度加權</h2>
+<pre><code>1. 每個資產算 1 ÷ 波動度
+2. 全部加起來
+3. 權重 = 自己的 (1 ÷ 波動度) ÷ 加總
+</code></pre>
+<p><strong>白話</strong>：越穩的資產分到越多錢，讓每個資產對組合的晃動貢獻差不多。</p>
+<p><strong>例題</strong>：股票波動度 20%，債券 10%。</p>
+<pre><code>股票：1 ÷ 0.2 = 5
+債券：1 ÷ 0.1 = 10
+加總：15
+
+股票權重 = 5 ÷ 15 = 1/3 ≈ 33%
+債券權重 = 10 ÷ 15 = 2/3 ≈ 67%
+</code></pre>
+<p>驗算：<code>33% × 20% ≈ 6.7%</code>，<code>67% × 10% ≈ 6.7%</code>，兩邊的波動貢獻一樣。</p>
+<h2>4. 權重漂移與再平衡</h2>
+<pre><code>漂移後的權重 = 該資產目前市值 ÷ 組合總市值
+再平衡換手率 = Σ |目標權重 − 漂移後權重|
+</code></pre>
+<p><strong>白話</strong>：一開始設 50/50，之後漲多的那檔佔比會自動變大。
+再平衡就是賣掉漲多的、買進漲少的，拉回目標。</p>
+<p><strong>例題</strong>：100 萬，A、B 各 50 萬。後來 A 翻倍，B 不動。</p>
+<pre><code>A 市值 100 萬，B 市值 50 萬，總共 150 萬
+漂移後權重：A = 100 ÷ 150 = 2/3，B = 50 ÷ 150 = 1/3
+
+拉回 50/50：各要 75 萬
+A 賣 25 萬，B 買 25 萬
+換手率 = |1/2 − 2/3| + |1/2 − 1/3| = 1/6 + 1/6 = 1/3
+</code></pre>
+<p>單邊成本 10 bp 時，這次再平衡的成本是 <code>1/3 × 0.1% ≈ 0.033%</code>。
+再平衡越頻繁，每次漂移越少，但次數越多。第五課比較了每週、每月、每季、每年。</p>
+<hr />
+<h2>練習題</h2>
+<ol>
+<li>70% 股票、30% 黃金。今天股票 −3%，黃金 +2%。組合報酬是多少？</li>
+<li>兩個資產波動度都是 30%，各放 50%，相關係數 0。組合波動度是多少？</li>
+<li>承上題，如果相關係數是 0.6 呢？</li>
+<li>三個資產波動度 10%、20%、40%。反波動度權重各是多少？</li>
+<li>100 萬，60% 股票、40% 債券。一年後股票漲 50%、債券不動。漂移後的權重是多少？拉回 60/40 的換手率是多少？</li>
+</ol>
+<details class="answers"><summary>看解答</summary>
+<ol>
+<li><code>0.7 × (−3%) + 0.3 × 2% = −2.1% + 0.6% = −1.5%</code></li>
+<li><code>0.25 × 0.09 + 0.25 × 0.09 = 0.045</code>，<code>√0.045 ≈ 21.2%</code></li>
+<li>再加 <code>2 × 0.5 × 0.5 × 0.6 × 0.3 × 0.3 = 0.027</code>，變異數 <code>0.072</code>，<code>√0.072 ≈ 26.8%</code></li>
+<li><code>1/0.1 = 10</code>、<code>1/0.2 = 5</code>、<code>1/0.4 = 2.5</code>，加總 17.5。權重 <code>10/17.5 ≈ 57.1%</code>、<code>5/17.5 ≈ 28.6%</code>、<code>2.5/17.5 ≈ 14.3%</code></li>
+<li>股票 90 萬、債券 40 萬，總共 130 萬。權重 <code>90/130 ≈ 69.2%</code>、<code>40/130 ≈ 30.8%</code>。換手率 <code>|60% − 69.2%| + |40% − 30.8%| ≈ 18.5%</code></li>
+</ol></details><p class="top"><a href="#top">回到目錄 ↑</a></p></section>
+</div></body></html>

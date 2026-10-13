@@ -20,6 +20,13 @@
 | [04 過度擬合的機率](04_overfitting.md) | 第四課 |
 | [05 投資組合](05_portfolio.md) | 第五課 |
 
+想在手機或瀏覽器上讀，打開 `math/handouts.html`（五份合在一起，解答預設收起來）。
+改了講義之後，用這行重新產生：
+
+```
+uv run --with markdown python math/build_html.py
+```
+
 想確認「手算的跟程式算的一樣」，執行：
 
 ```
