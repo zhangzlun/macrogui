@@ -6,6 +6,8 @@
 - 再平衡頻率的影響
 - 分散為什麼被稱為「唯一的免費午餐」
 
+數學講義：math/05_portfolio.md
+
 執行：uv run python lessons/05_portfolio.py [代號1 代號2 ...]
 預設：SPY（美股）、TLT（長天期美債）、GLD（黃金）、VNQ（不動產）
 """
@@ -24,7 +26,7 @@ from quantlab.plotting import plot_equity
 
 def main() -> None:
     args = lesson_parser("第五課：投資組合與分散", ["SPY", "TLT", "GLD", "VNQ"]).parse_args()
-    header("第五課：投資組合與分散")
+    header("第五課：投資組合與分散", "05_portfolio.md")
     prices = load_from_args(args).dropna()
     if prices.shape[1] < 2:
         raise SystemExit("投資組合至少需要兩檔標的")

@@ -6,6 +6,8 @@
 - 滾動前進驗證：比較誠實的評估方式
 - 為什麼「試越多次，越容易找到假的好策略」
 
+數學講義：math/04_overfitting.md
+
 執行：uv run python lessons/04_overfitting.py [代號]
 """
 
@@ -28,7 +30,7 @@ GRID = {"fast": [5, 10, 20, 30, 50, 80], "slow": [60, 100, 150, 200, 250]}
 
 def main() -> None:
     args = lesson_parser("第四課：過度擬合", ["SPY"]).parse_args()
-    header("第四課：過度擬合——最貴的一課")
+    header("第四課：過度擬合——最貴的一課", "04_overfitting.md")
     prices = load_from_args(args)
     p = prices.iloc[:, 0].dropna()
 

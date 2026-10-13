@@ -40,10 +40,12 @@ def load_from_args(args: argparse.Namespace) -> pd.DataFrame:
     return prices
 
 
-def header(title: str) -> None:
+def header(title: str, handout: str | None = None) -> None:
     print("=" * 64)
     print(title)
     print(DISCLAIMER)
+    if handout:
+        print(f"數學講義：math/{handout}（數字怎麼算出來的，看這份）")
     print("=" * 64)
 
 

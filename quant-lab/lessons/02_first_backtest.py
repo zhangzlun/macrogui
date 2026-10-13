@@ -6,6 +6,8 @@
 - 交易成本的影響
 - 前視偏誤：最常見、也最致命的回測錯誤
 
+數學講義：math/02_backtest.md
+
 執行：uv run python lessons/02_first_backtest.py [代號]
 """
 
@@ -22,7 +24,7 @@ from quantlab.plotting import plot_equity
 
 def main() -> None:
     args = lesson_parser("第二課：你的第一個回測", ["SPY"]).parse_args()
-    header("第二課：你的第一個回測")
+    header("第二課：你的第一個回測", "02_backtest.md")
     prices = load_from_args(args)
     p = prices.iloc[:, 0].dropna()
 

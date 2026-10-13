@@ -5,6 +5,8 @@
 - 用同一套指標公平比較
 - 沒有「最好」的策略，只有不同的取捨
 
+數學講義：math/03_indicators.md
+
 執行：uv run python lessons/03_compare_strategies.py [代號]
 """
 
@@ -23,7 +25,7 @@ from quantlab.plotting import plot_equity
 
 def main() -> None:
     args = lesson_parser("第三課：比較不同類型的策略", ["SPY"]).parse_args()
-    header("第三課：比較不同類型的策略")
+    header("第三課：比較不同類型的策略", "03_indicators.md")
     prices = load_from_args(args)
     p = prices.iloc[:, 0].dropna()
 

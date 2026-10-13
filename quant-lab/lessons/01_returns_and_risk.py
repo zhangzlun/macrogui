@@ -6,6 +6,8 @@
 - 報酬分布的「肥尾」：極端日子比常態分布預期的多
 - 回撤：最貼近真實感受的風險指標
 
+數學講義：math/01_returns_and_risk.md
+
 執行：uv run python lessons/01_returns_and_risk.py [代號]
 """
 
@@ -24,7 +26,7 @@ from quantlab.plotting import plot_series
 
 def main() -> None:
     args = lesson_parser("第一課：報酬與風險", ["SPY"]).parse_args()
-    header("第一課：報酬與風險")
+    header("第一課：報酬與風險", "01_returns_and_risk.md")
     prices = load_from_args(args)
     ticker = prices.columns[0]
     p = prices[ticker].dropna()
